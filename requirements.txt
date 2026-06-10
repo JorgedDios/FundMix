@@ -1,0 +1,5 @@
+cvxpy==1.5.3
+numpy==2.4.6
+pandas==3.0.3
+plotly==5.24.1
+streamlit==1.52.2
