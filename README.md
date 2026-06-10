@@ -1,122 +1,56 @@
-# FundMix
-Sistema inverso de asignación de pesos para carteras de fondos de inversión
-# 🧠 FundMix – Asistente Inteligente para Composición de Carteras
+# 🧬 FundMix: Asistente Inteligente para la Composición de Carteras
 
-**FundMix** es una herramienta desarrollada en Python cuyo objetivo es ayudar a los usuarios a construir carteras de inversión personalizadas, ajustadas a sus preferencias específicas. El usuario define condiciones como exposición geográfica, sectorial o temática, límites de comisiones, tipo de gestión (activa/pasiva), y el sistema le indica en qué fondos debe invertir y en qué proporción.  
+FundMix es una herramienta avanzada de ingeniería financiera desarrollada en Python. Su objetivo es ayudar a inversores y asesores a construir carteras de inversión personalizadas (Fondos y ETFs) totalmente adaptadas a sus preferencias específicas.
 
-Es, esencialmente, un **sistema inverso de asignación de pesos**.  
+A diferencia de los optimizadores tradicionales basados en la Teoría de Markowitz (que requieren predecir rentabilidades futuras), FundMix opera como un **sistema inverso de asignación de pesos**. El usuario define su perfil ideal (exposición geográfica, sectorial, nivel de riesgo, costes máximos y política de divisa) y el motor calcula la combinación matemática exacta de activos que minimiza la desviación (*Tracking Error*) frente a ese objetivo.
 
 ---
 
-## 🔧 ¿Qué puede hacer FundMix?
+## 🔧 ¿Qué hace FundMix? (Características Actuales)
 
-- Recibe criterios de inversión del usuario: país, sector, temática, comisiones máximas, tipo de gestión, etc.
-- Busca fondos que cumplan con las condiciones.
-- Calcula los pesos exactos que cada fondo debe tener en la cartera final.
-- Utiliza métodos de optimización lineal (`scipy.optimize.linprog`, `cvxpy`) para resolver el sistema.
-- Parte de una **base de datos local de fondos**, introducida manualmente en una primera versión.
-- Permite escalar a cientos de fondos con múltiples dimensiones.
-
----
-
-## 💬 Ejemplo de uso
-
-El usuario indica que quiere:
-
-- 50% de exposición a EE.UU. (equiponderado)
-- 20% de exposición a China
-- 50% del total invertido en el sector tecnológico
-- Comisiones inferiores al 0.5%
-
-**Resultado posible:**
-
-- 35% en MSCI World  
-- 45% en fondo MYIN (S&P500 equiponderado)  
-- 20% en fondo tecnológico chino
+* **Ingesta y Gestión de Datos Eficiente:** Capa de persistencia local optimizada para la lectura rápida del universo de inversión.
+* **Segmentación Geográfica Dual:** Separa los riesgos de mercado y de tipo de interés distinguiendo entre geografía de Renta Variable (`Geo_RV`) y Renta Fija (`Geo_RF`).
+* **Motor de Optimización Convexa:** Resuelve asignaciones complejas en milisegundos garantizando el óptimo global mediante programación cuadrática.
+* **Lógica de Negocio Defensiva (*Data Shielding*):** Penaliza automáticamente activos con información incompleta para proteger la cartera de la incertidumbre.
+* **Gestión Granular de Divisas:** Permite aplicar coberturas de tipo de cambio (*Hedging*) de forma selectiva por clase de activo.
+* **Interfaz de Usuario Interactiva:** Panel visual dinámico con gráficos en tiempo real y reportes de auditoría de desviaciones.
 
 ---
 
-## 🔄 Evolución prevista
+## 🛠️ Arquitectura Técnica y Stack Tecnológico
 
-- Añadir función que actualice la base de datos automáticamente desde APIs o páginas web.
-- Detectar diferencias entre la base de datos local y externa y sugerir actualizaciones.
-- Crear interfaz gráfica (Tkinter, PyQt) o aplicación web (Flask, Django).
-- Soporte para criterios adicionales: rating ESG, volatilidad, riesgo, drawdown, exposición a divisa, etc.
+El proyecto está diseñado bajo un enfoque modular, separando estrictamente la persistencia, la lógica matemática y la capa de presentación:
+
+* **Base de Datos (Fase 1):** `SQLite3` (archivo local `FundMix.db`). Implementa un sistema de inyección semántica por diccionarios que la hace inmune a cambios futuros en el esquema de la tabla.
+* **Motor Matemático (Fase 2):** `CVXPY` + `Pandas` + `NumPy`. Formulación de restricciones lineales (*Long-Only*, presupuesto del 100%) y linealización de ratios condicionales para optimizar métricas exclusivas de Renta Fija (como la *Duración*) sin romper la convexidad del problema.
+* **Interfaz Gráfica (Fase 3):** `Streamlit` + `Plotly`. Dashboard interactivo web *serverless* que actúa como panel de control del optimizador.
 
 ---
 
-## 🤖 IA y aprendizaje automático
+## 💬 Ejemplo Práctico de Uso
 
-Se planea introducir técnicas de inteligencia artificial para:
+**Entrada del Usuario (Deseos):**
+* 60% de exposición a Renta Variable de EE.UU.
+* 40% de exposición a Renta Fija Global.
+* Duración media de la Renta Fija de 3.0 años.
+* Nivel de riesgo global de la cartera ajustado a un SRRI de 4.0.
+* Preferencias: Evitar vehículos estructurados como ETFs (priorizar Fondos) y exigir cobertura de divisa (*Hedged*) exclusivamente en la parte de bonos.
 
-- Aprender de carteras anteriores y mejorar la asignación.
-- Recomendar fondos en función del perfil de usuario.
-- Predecir exposiciones óptimas en base a datos económicos, correlaciones y tendencias.
-- Utilizar clustering, aprendizaje por refuerzo o sistemas de recomendación.
-- Incorporar noticias o eventos de mercado en las sugerencias.
+**Resultado del Motor:**
+El sistema procesa el universo disponible en la base de datos y devuelve la lista de activos óptima con sus pesos exactos (ej. *45% Amundi Index MSCI World, 35% iShares Core S&P 500, 20% iShares Global Agg Bond*), junto con un reporte de auditoría que demuestra el cumplimiento de los objetivos.
+
+---
+
+## 🔄 Roadmap (Evolución del Proyecto)
+
+* [🚀 **En Desarrollo**] **Fase 4: Ingesta Automática de Datos Reales.** Desarrollo de un Web Scraper (Morningstar/Yahoo Finance) o integración de APIs financieras para poblar la base de datos con miles de activos reales en tiempo real.
+* [🔮 **Próximamente**] **Fase 5: Refinamiento de Usuario y Ponderación.** Incorporación de un sistema de pesos (*Weighted Optimization*) para permitir al usuario priorizar unos objetivos sobre otros en caso de conflicto matemático.
+* [🔮 **Próximamente**] **Internacionalización (i18n):** Soporte bilingüe completo (Español / Inglés) configurable desde la interfaz.
+* [🤖 **Futuro**] **Modelos Avanzados de IA:** Integración de algoritmos de Clustering para clasificación de estilo y sistemas de recomendación basados en el comportamiento histórico del usuario.
 
 ---
 
 ## 📚 Aplicaciones
 
-- Herramienta educativa para comprender cómo se construyen carteras diversificadas.
-- Soporte profesional para asesores financieros o analistas cuantitativos.
-- Proyectos académicos o investigación aplicada sobre optimización de carteras.
-
----
-
-Este repositorio está construido con las buenas prácticas de versionado usando Git y GitHub, incluyendo configuración de `.gitignore`, documentación modular, uso de ramas para nuevas funcionalidades y posibilidad de automatización futura.
-
-¡Bienvenido a FundMix! ✨
-
-
-VER SI LA DESCRIPCIÓN DE ARRIBA TIENE LO MISMO QUE LA DE ABAJO
-
-# FundMix - Asistente Inteligente para Composición de Carteras
-
-# FundMix será un programa donde el usuario podrá introducir cómo desea invertir su dinero: 
-# especificando porcentajes por país, sector, exposición temática, tipo de fondos, comisiones máximas, 
-# gestión activa o pasiva, y otras restricciones relevantes.
-
-# El programa devolverá en qué fondos invertir y en qué proporción, respetando todas las condiciones 
-# introducidas por el usuario. Es, esencialmente, un sistema inverso de asignación de pesos.
-
-# Para ello se creará una base de datos de fondos, inicialmente introducida manualmente, incluyendo los 
-# datos relevantes de cada uno (geografía, sector, comisiones, tipo de gestión, etc.).
-
-# Más adelante se añadirá una función que actualice automáticamente la base de datos a partir de fuentes reales 
-# (webs, APIs) y que avise si encuentra diferencias con la base de datos local.
-
-# El proyecto es altamente escalable: se podrán cargar cientos de fondos, y es aplicable al mundo real. 
-# Además, es flexible: soporta múltiples dimensiones de exposición (geográfica, sectorial, temática, ESG...).
-
-# --- Ejemplo inicial simple de uso:
-# Quiero una cartera con:
-# - 50% en EE.UU. (equiponderado),
-# - 20% en China,
-# - 50% del total en tecnología,
-# - Fondos con comisiones menores a 0.5%
-
-# Resultado esperado (ejemplo):
-# - 35% en MSCI World,
-# - 45% en fondo MYIN (S&P500 equiponderado),
-# - 20% en fondo tecnológico chino
-
-# En su versión más sencilla, esto se resuelve como un sistema de ecuaciones lineales, 
-# donde las incógnitas son los pesos de cada fondo. Herramientas en Python que he dado en optimizacion y sirven:
-# - scipy.optimize.linprog
-# - cvxpy
-
-# --- Mejoras futuras:
-# - Interfaz gráfica o aplicación web
-# - Soporte para más dimensiones: volatilidad, rating ESG, riesgo, drawdown...
-# - Importación automática de datos reales
-# - Optimización basada en Machine Learning
-
-# --- Aplicaciones de Inteligencia Artificial:
-# - Modelos que aprendan a asignar pesos óptimos a partir de casos anteriores
-# - Sistemas que aprendan del comportamiento de usuarios para recomendar carteras
-# - Modelos predictivos de exposiciones óptimas en base a previsiones de riesgo, correlaciones, tendencias, datos macroeconómicos, noticias, etc.
-# - Técnicas de aprendizaje por refuerzo, clustering, predicción o sistemas de recomendación
-
-# FundMix será una herramienta educativa y profesional para la planificación de carteras personalizadas basada en objetivos concretos.
+* **Educativa:** Herramienta interactiva para estudiantes y analistas que deseen comprender la construcción de carteras diversificadas y las matemáticas de la optimización convexa.
+* **Profesional:** Soporte cuantitativo para asesores financieros y gestores de patrimonio que busquen automatizar la asignación de activos orientada a objetivos específicos (*Goal-Based Investing*).
