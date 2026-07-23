@@ -43,6 +43,10 @@ def get_data_from_db():
     # Si el usuario odia los dividendos, penalizaremos los que tengan is_Dist = 1
     df['is_Dist'] = (df['PoliticaDiv'] == 'Dist').astype(int)
 
+    # === Gestion Activa (1) vs Pasiva (2)
+    df['is_Activa'] = (df['EstiloGestion'] == 'Activa').astype(int)
+    # =========================================================================
+
     # ---  BANDERAS AVANZADAS (HEDGING POR CLASE) ---
     
     # Detectamos si es Hedged (General)
@@ -63,7 +67,7 @@ def get_data_from_db():
     #  Tratamiento de Calidad Crediticia:
     # - Si es RV: Ponemos 0 (No aplica, no afecta al promedio).
     # - Si es RF y es Nulo: Ponemos 12 (Peor que D). 
-    #   PENALIZACIÓN MÁXIMA a la incertidumbre.
+    #  PENALIZACIÓN MÁXIMA a la incertidumbre.
     
     # Rellenamos RV con 0
     df.loc[is_rv, 'RF_Calidad_Num'] = df.loc[is_rv, 'RF_Calidad_Num'].fillna(0.0)
@@ -85,7 +89,12 @@ def get_data_from_db():
     # 4. Es RF y NO está Cubierto
     df['is_RF_Unhedged'] = (is_rf & ~is_hedged_global).astype(int)
 
-    
+    # === NUEVO V2: AGRUPACIÓN DE EMERGENTES PARA FACILITAR LOS OBJETIVOS DEL USUARIO ===
+    cols_emergentes = ['Geo_RV_China', 'Geo_RV_India', 'Geo_RV_Taiwan', 'Geo_RV_Korea', 'Geo_RV_Brasil', 'Geo_RV_Emergentes_Otros']
+    # Sumamos las subcolumnas pero tratando los posibles Nulos como 0 para no romper cálculos
+    df['Geo_RV_Emergentes_Total'] = df[cols_emergentes].fillna(0).sum(axis=1)
+    # ====================================================================================
+
     # LIMPIEZA DE DATOS (CRÍTICO)
     # Los valores NULL en el optimizador no interesan. 
     # Los convertimos a 0.0
@@ -106,7 +115,12 @@ def optimize_portfolio(df, user_targets,
                        preference_etf=0.0,
                        preference_dist=0.0,
                        preference_hedged_rv=0.0,
-                       preference_hedged_rf=0.0):
+                       preference_hedged_rf=0.0,
+                       # === NUEVO V2: PARÁMETROS PARA ESTRATEGIAS Y LÍMITE DE ACTIVA ===
+                       exclude_strategies=None,
+                       max_activa=None,
+                       # === NUEVO V3: BANDAS DE ESTILO ===
+                       estrategias_bandas=None):
     """
     Paso 2: El Motor Matemático (CVXPY).
     
@@ -120,8 +134,22 @@ def optimize_portfolio(df, user_targets,
                         < 0 Negativo (ej. -0.1) = Usuario ODIA esta característica, penaliza el tenerla
     """
     
+    # === NUEVO V2: PRE-PROCESSING (FILTRO POR ESTRATEGIAS ANTES DE OPTIMIZAR) ===
+    if exclude_strategies is not None:
+        # Borramos los fondos que pertenezcan a las estrategias prohibidas
+        df = df[~df['Estrategia'].isin(exclude_strategies)].copy()
+        df.reset_index(drop=True, inplace=True) # Reset de índice vital para CVXPY
+    # ============================================================================
+
     # --- A. VARIABLES ---
     n_funds = len(df) # numero de fondos (numero de filas (records))
+
+    # === NUEVO V2: CONTROL DE SEGURIDAD POR SI EL FILTRO ELIMINA TODOS LOS FONDOS ===
+    if n_funds == 0:
+        print("❌ Tras aplicar los filtros, no quedan fondos en el universo.")
+        return None
+    # ==============================================================================
+
     # 'w' es el vector de PESOS que buscamos. El ordenador debe rellenar esto.
     w = cp.Variable(n_funds) 
     # tenemos tantos pesos como número de fondos (me reserva memoria para n_funds)
@@ -133,9 +161,23 @@ def optimize_portfolio(df, user_targets,
         w >= 0             # 2. No permitimos posiciones cortas (pesos negativos) Posiciones positivas = compra
     ]
     
+    # =========================================================================
+    # NIVEL 1: RESTRICCIONES DURAS (HARD CONSTRAINTS) - INNEGOCIABLES
+    # =========================================================================
+    # LÓGICA DE TOLERANCIA CERO: Si pide 0%, prohibimos matemáticamente tener exposición.
+    for col, target_val in user_targets.items():
+        # Excluimos la Renta Fija de esta restricción dura directa por cómo calculamos su media después
+        if target_val == 0.0 and col in df.columns and not col.startswith('RF_'):
+            constraints.append(w @ df[col].values == 0)
+
     # --- C. FUNCIÓN OBJETIVO (EL ERROR A MINIMIZAR) ---
     error_total = 0
     
+    # =========================================================================
+    # NIVEL 2: PRIORIDAD MÁXIMA (Multiplicador x100) - Geografía y Asset Allocation
+    # =========================================================================
+    factor_nivel_2 = 100.0
+
     # Recorremos cada deseo del usuario (Ej: 'Geo_RV_USA': 0.60)
     # col es el attribute (clave) y target_val es el valor dentro del diccionario de los objetivos del usuario
     # diccionario.items() returns clave, valor.
@@ -144,6 +186,14 @@ def optimize_portfolio(df, user_targets,
             print(f"⚠️ Aviso: La columna '{col}' no existe en la BBDD. Se ignora.")
             continue
             # continue ignora y sigue.
+
+        # Saltamos los 0% de RV porque ya están blindados como Hard Constraint en el Nivel 1
+        if target_val == 0.0 and not col.startswith('RF_'):
+            continue
+
+        # Pasamos la Escala de Riesgo a modo "Solo Informativo" (El motor no la optimiza)
+        if col == 'EscalaRiesgo':
+            continue
 
         # Para cada columna y valores (clave: valor)    
         # Extraemos los datos de esa columna del DataFrame (ej. la columna USA de todos los fondos)
@@ -162,7 +212,7 @@ def optimize_portfolio(df, user_targets,
             # El error es la diferencia entre la Contribución Real y la Contribución Teórica Ideal
             # Si tengo 0% de RF, weight_sum_rf es 0 y el error se anula (correcto).
             term = contribution_sum - (target_val * weight_sum_rf)
-            error_total += cp.power(term, 2)
+            error_total += factor_nivel_2 * cp.power(term, 2)
 
         else:
             # AHORA EL CASO NORMAL (global), aquí si que contamos toda la cartera y no solo la RF
@@ -177,7 +227,12 @@ def optimize_portfolio(df, user_targets,
             # SUMAMOS EL ERROR AL CUADRADO
             # (Lo que tenemos - Lo que queremos)^2
             # Usamos cuadrados para penalizar mucho los errores grandes.
-            error_total += cp.power(actual_exposure - target_val, 2)
+            error_total += factor_nivel_2 * cp.power(actual_exposure - target_val, 2)
+
+    # =========================================================================
+    # NIVEL 3: PRIORIDAD BLANDA (Multiplicador x1) - Preferencias y Bandas
+    # =========================================================================
+    factor_nivel_3 = 1.0
 
     def get_penalty_term(weights, binary_col_values, preference_val):
         """
@@ -239,15 +294,46 @@ def optimize_portfolio(df, user_targets,
         # ODIO cubrir RF -> Penalizo RF SÍ Cubierta
         penalty_hedged_rf = abs(preference_hedged_rf) * (w @ df['is_RF_Hedged'].values)
 
+    # === NUEVO V2: RESTRICCIÓN SUAVE (SOFT CONSTRAINT) PARA LÍMITE DE GESTIÓN ACTIVA ===
+    penalty_activa = 0
+    if max_activa is not None:
+        # cp.pos() devuelve 0 si no nos pasamos de max_activa, y el exceso si nos pasamos.
+        exceso_activa = cp.pos((w @ df['is_Activa'].values) - max_activa)
+        # Multiplicamos por 10.0 (un factor de penalización) y lo elevamos al cuadrado.
+        # Es lo suficientemente alto para frenarlo, pero permite pasarse un poco si mejora enormemente la cartera.
+        penalty_activa = 10.0 * cp.power(exceso_activa, 2)
+    # ===================================================================================
+
+    # === NUEVO V3: LÓGICA DE BANDAS DE ESTILO (HINGE LOSS) ===
+    penalty_bandas = 0
+    if estrategias_bandas:
+        for strat, (min_val, max_val) in estrategias_bandas.items():
+            if min_val == 0.0 and max_val == 1.0:
+                continue # Si no hay preferencia, ignoramos para ahorrar cálculo
+                
+            # Identificamos qué fondos tienen esta estrategia
+            is_strat = (df['Estrategia'] == strat).astype(int).values
+            peso_strat = w @ is_strat
+            
+            # Penalización "Suelo y Techo": Solo hay castigo si sale del rango [min, max]
+            penal_suelo = cp.pos(min_val - peso_strat)
+            penal_techo = cp.pos(peso_strat - max_val)
+            penalty_bandas += (cp.power(penal_suelo, 2) + cp.power(penal_techo, 2))
+    # ===================================================================================
+
     # --- E. RESOLVER ---
-    # Queremos minimizar (Error de Tracking + Penalización de Preferencia)
-    objective = cp.Minimize(error_total + penalty_etf + penalty_dist + penalty_hedged_rf + penalty_hedged_rv)
+    # Agrupamos todas las penalizaciones suaves multiplicadas por el factor Nivel 3
+    penalizaciones_suaves = factor_nivel_3 * (penalty_etf + penalty_dist + penalty_hedged_rf + penalty_hedged_rv + penalty_activa + penalty_bandas)
+    
+    # Queremos minimizar (Error de Tracking Nivel 2 + Penalizaciones de Preferencia Nivel 3)
+    objective = cp.Minimize(error_total + penalizaciones_suaves)
     prob = cp.Problem(objective, constraints)
     
     # El solver intenta encontrar los valores de 'w'
     # se hace control de error, por si el solver diera cualquier tipo de error, saber que ha sido por el solver.
     try:
-        prob.solve()
+        # Usamos ECOS en lugar de default porque es mucho más estable matemáticamente para las funciones Hinge Loss (cp.pos)
+        prob.solve() 
     except Exception as e:
         print(f"Error resolviendo: {e}")
         return None
@@ -256,9 +342,12 @@ def optimize_portfolio(df, user_targets,
     # Guardamos los pesos calculados en el DataFrame para verlos
     df['Peso_Optimizado'] = w.value
     
-    # Filtramos para devolver solo los fondos que ha comprado (peso > 0.001)
+    # Limpiamos ruido matemático (ej: 0.000000001% lo ponemos a 0)
+    df['Peso_Optimizado'] = df['Peso_Optimizado'].apply(lambda x: 0 if x < 0.001 else x)
+    
+    # Filtramos para devolver solo los fondos que ha comprado (peso > 0)
     # y devolvemos una copia de ese dataframe para no modificar el original
-    cartera_final = df[df['Peso_Optimizado'] > 0.001].copy()
+    cartera_final = df[df['Peso_Optimizado'] > 0].copy()
     
     # Ordenamos de mayor a menor peso, para que nos salgan los fondos con mayor peso al principio
     return cartera_final.sort_values(by='Peso_Optimizado', ascending=False)
@@ -266,7 +355,7 @@ def optimize_portfolio(df, user_targets,
 
 # --- BLOQUE DE EJECUCIÓN (AUDITORIA) (PARA PROBARLO) ---
 if __name__ == "__main__":
-    print("🚀 Iniciando Motor FundMix...")
+    print("🚀 Iniciando Motor FundMix v2...")
     
     # 1. Cargar Datos
     df_fondos = get_data_from_db()
@@ -277,7 +366,12 @@ if __name__ == "__main__":
     # 60% Bolsa USA, 40% Bonos Globales (con duración 7.5 aprox)
     objetivos_usuario = {
         'Geo_RV_USA': 0.60,      # Quiero 60% en acciones USA
-        'Expo_RF': 0.40,         # Quiero 40% en Renta Fija total
+        
+        # === NUEVO V2: PODEMOS USAR LA MACRO-VARIABLE QUE HEMOS CREADO ===
+        'Geo_RV_Emergentes_Total': 0.10, # Usando la suma de China, India, etc.
+        # =================================================================
+        'Geo_RV_Japon':0.1,
+        'Expo_RF': 0.20,         # Quiero 30% en Renta Fija total
         'RF_Duracion': 3.0,     # Quiero una duración media de cartera de 3 años (mezcla corto/largo)
         'EscalaRiesgo' : 4.0,
     }
@@ -288,15 +382,27 @@ if __name__ == "__main__":
     preference_hedged_rv= -1 # No quiero hedged en RV
     preference_hedged_rf = 1 # quiero hedged en RF
 
+    # === NUEVO V2: DEFINIMOS LOS LÍMITES DE ACTIVA Y ESTRATEGIAS EXCLUIDAS ===
+    estrategias_prohibidas = ['Alternativo', 'Inmobiliario'] # Ej: No quiero estas estrategias
+    limite_activa_suave = 0.20 # Máximo 20% en fondos de EstiloGestion='Activa'
+    # =========================================================================
+
     print(f"\n🎯 Objetivos del usuario: {objetivos_usuario}")
+    print(f"🚫 Estrategias excluidas: {estrategias_prohibidas}")
+    print(f"⚖️ Límite Gestión Activa (Suave): {limite_activa_suave * 100}%")
     
     # 3. Optimizar
+    # === NUEVO V2: PASAMOS LAS VARIABLES EXTRA AL OPTIMIZADOR ===
     resultado = optimize_portfolio(df_fondos, 
                                    objetivos_usuario, 
                                    preference_dist=pref_dist, 
                                    preference_etf=pref_etf, 
                                    preference_hedged_rv=preference_hedged_rv,
-                                   preference_hedged_rf=preference_hedged_rf)
+                                   preference_hedged_rf=preference_hedged_rf,
+                                   exclude_strategies=estrategias_prohibidas,
+                                   max_activa=limite_activa_suave,
+                                   estrategias_bandas=None) # Añadido
+    # ============================================================
     
     # 4. Mostrar Resultado de forma Dinámica
 
@@ -307,18 +413,26 @@ if __name__ == "__main__":
         
         # A. CONSTRUCCIÓN DINÁMICA DE COLUMNAS
         # Columnas fijas (Identidad)
-        cols_basicas = ['Nombre', 'Ticker', 'TipoProducto', 'Peso_Optimizado']
+        # === NUEVO V2: AÑADIMOS LAS COLUMNAS DE ESTRATEGIA A LA VISTA ===
+        cols_basicas = ['Nombre', 'Ticker', 'TipoProducto', 'EstiloGestion', 'Estrategia', 'Peso_Optimizado']
+        # ================================================================
+
         # Columnas dinámicas (Lo que pidió el usuario) + Variables de preferencia usadas
         # Solo intentamos mostrar las columnas que REALMENTE existen en el resultado
         cols_objetivos = [col for col in objetivos_usuario.keys() if col in resultado.columns]
 
         cols_preferencias = ['EscalaRiesgo','PoliticaDiv','EsHedged'] # Añadimos esta porque usamos pref_hedged
         
+        # === NUEVO V2: CREAMOS LA LISTA DE RATIOS FINANCIEROS INFORMATIVOS ===
+        cols_informativas = ['Ret_3Y_Ann', 'Sharpe_3Y', 'Volatilidad_3Y']
+        # =====================================================================
+
         # Juntamos todo
         # Filtro estético para no duplicar columnas (si EscalaRiesgo está en objetivos y preferencias, solo sale una vez)
         cols_to_show = cols_basicas + \
                        [c for c in cols_preferencias if c not in cols_basicas] + \
-                       [c for c in cols_objetivos if c not in cols_basicas and c not in cols_preferencias]
+                       [c for c in cols_objetivos if c not in cols_basicas and c not in cols_preferencias] + \
+                       [c for c in cols_informativas if c in resultado.columns] # Añadimos ratios al final
         
         # Imprimimos tabla filtada (solo con las columnas que queremos y no las de todo el data frame)
         # .to_string(index=false): esto es un truco estético: si haces print(df) normal, 
@@ -335,6 +449,11 @@ if __name__ == "__main__":
         # Calculamos cuánto pesa la Renta Fija en total para poder "des-diluir" sus métricas
         peso_total_rf = np.dot(peso, resultado['is_RF_Universe'].values)
         print(f"   ℹ️ Peso total Renta Fija: {peso_total_rf:.2%}")
+
+        # === NUEVO V2: IMPRIMIMOS EL PESO TOTAL DE LA GESTIÓN ACTIVA PARA AUDITORÍA ===
+        peso_total_activa = np.dot(peso, resultado['is_Activa'].values)
+        print(f"   ℹ️ Peso total Gestión Activa: {peso_total_activa:.2%} (Límite solicitado: {limite_activa_suave:.2%})")
+        # ==============================================================================
         
         for metrica, valor_objetivo in objetivos_usuario.items():
             # Verificamos que la métrica exista en el resultado para no fallar

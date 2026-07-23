@@ -59,7 +59,11 @@ with st.sidebar:
     with st.expander("🌍 Geografía (Renta Variable)", expanded=True):
         target_usa = st.slider("🇺🇸 Exposición EE.UU.", 0.0, 1.0, 0.60, step=0.05)
         target_europa = st.slider("🇪🇺 Exposición Europa", 0.0, 1.0, 0.20, step=0.05)
-        target_emerg = st.slider("🌏 Exposición Emergentes", 0.0, 1.0, 0.10, step=0.05)
+        # === NUEVO V2.1: SLIDERS PARA JAPÓN, CANADÁ Y EMERGENTES TOTALES ===
+        target_emerg = st.slider("🌏 Exposición Emergentes (Total)", 0.0, 1.0, 0.10, step=0.05)
+        target_japon = st.slider("🇯🇵 Exposición Japón", 0.0, 1.0, 0.0, step=0.05)
+        target_canada = st.slider("🇨🇦 Exposición Canadá", 0.0, 1.0, 0.0, step=0.05)
+        # =================================================================
     
     # --- BLOQUE 2: RENTA FIJA PRO ---
     with st.expander("🛡️ Renta Fija Avanzada", expanded=True):
@@ -67,7 +71,7 @@ with st.sidebar:
         
         st.caption("Objetivos específicos para la parte de Bonos:")
         target_duracion = st.slider("⏳ Duración Objetivo (Años)", 0.0, 15.0, 4.0, step=0.5,
-                                  help="El optimizador ajustará esto SIN que la bolsa lo diluya.")
+                                   help="El optimizador ajustará esto SIN que la bolsa lo diluya.")
         
         # Mapeo inverso visual para el usuario (Letra -> Número)
         # El usuario elige 'A', nosotros enviamos '3.0' al motor
@@ -90,9 +94,46 @@ with st.sidebar:
         target_riesgo = st.slider("Nivel SRRI (1-7)", 1.0, 7.0, 4.0, step=0.1)
         st.info("El sistema buscará fondos que promedien este riesgo exacto.")
 
-    st.header("⚙️ Preferencias")
+    st.header("⚙️ Preferencias y Filtros")
     
-    # Preferencias (-1 a 1)
+    # === NIVEL 1 (HARD): EXCLUSIÓN DE ESTRATEGIAS ===
+    opciones_estrategia = ['Core', 'Value', 'Growth', 'Dividendo', 'Alternativo', 'Inmobiliario']
+    estrategias_a_excluir = st.multiselect(
+        "🚫 Estrategias a Excluir (0%)",
+        options=opciones_estrategia,
+        default=[] 
+    )
+
+   # === NIVEL 3 (SOFT): BANDAS DE ESTILO (TILTING) ===
+    st.markdown("---")
+    st.subheader("🎯 Sesgo de Estilo (Opcional)")
+    
+    # Diccionario de traducción: Texto -> (Min, Max)
+    bandas_dict = {
+        "Sin preferencia (Ignorar)": (0.0, 1.0),
+        "Táctica (0% - 25%)": (0.0, 0.25),
+        "Convencional (25% - 50%)": (0.25, 0.50),
+        "Estructural (50% - 75%)": (0.50, 0.75),
+        "Agresiva (75% - 100%)": (0.75, 1.0)
+    }
+    
+    # Lista completa de tus estrategias
+    todas_las_estrategias = ['Core', 'Value', 'Growth', 'Dividendo', 'Quality', 'Defensivo']
+    
+    estrategias_bandas = {}
+    
+    # Usamos st.columns para poner los selectores en 2 columnas y ahorrar espacio visual
+    cols_est = st.columns(2)
+    for i, strat in enumerate(todas_las_estrategias):
+        with cols_est[i % 2]:
+            seleccion = st.selectbox(strat, options=list(bandas_dict.keys()), key=f"banda_{strat}")
+            estrategias_bandas[strat] = bandas_dict[seleccion]
+            
+    st.markdown("---")
+
+    # === PREFERENCIAS CLÁSICAS ===
+    max_activa = st.slider("Límite Gestión Activa (Suave)", 0.0, 1.0, 0.20, help="El motor penalizará si supera este %")
+
     pref_etf = st.select_slider(
         "Vehículo", 
         options=[-1.0, -0.5, 0.0, 0.5, 1.0], 
@@ -105,7 +146,6 @@ with st.sidebar:
         pref_hedged_rv = st.slider("Divisa RV", -1.0, 1.0, -1.0, help="Negativo = Sin Cubrir")
     with col_p2:
         pref_hedged_rf = st.slider("Divisa RF", -1.0, 1.0, 1.0, help="Positivo = Cubierta (Hedged)")
-
     calcular = st.button("🚀 Optimizar Cartera", type="primary", use_container_width=True)
 
 # ==============================================================================
@@ -120,11 +160,12 @@ if calcular:
         st.stop()
 
     # 2. Empaquetar Objetivos (Mapeo UI -> Backend)
-    # Solo enviamos lo que el usuario ha tocado para no meter ruido
     objetivos_usuario = {
         'Geo_RV_USA': target_usa,
         'Geo_RV_Europa': target_europa,
-        'Geo_RV_Emergentes': target_emerg,
+        'Geo_RV_Emergentes_Total': target_emerg,
+        'Geo_RV_Japon': target_japon,
+        'Geo_RV_Canada': target_canada,
         'Expo_RF': target_rf,
         'RF_Duracion': target_duracion,
         'RF_Calidad_Num': target_calidad_num,
@@ -138,7 +179,10 @@ if calcular:
             objetivos_usuario,
             preference_etf=pref_etf,
             preference_hedged_rv=pref_hedged_rv,
-            preference_hedged_rf=pref_hedged_rf
+            preference_hedged_rf=pref_hedged_rf,
+            max_activa=max_activa,
+            exclude_strategies=estrategias_a_excluir, # Nivel 1 variable
+            estrategias_bandas=estrategias_bandas     # Nivel 3 variable
         )
 
     # ==============================================================================
