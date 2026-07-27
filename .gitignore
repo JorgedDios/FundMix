@@ -28,3 +28,12 @@ Thumbs.db
 
 # Archivos temporales de Streamlit (Opcional por seguridad futura)
 .streamlit/secrets.toml
+
+
+# Bases de datos locales (NO SUBIR)
+*.db
+*.sqlite
+*.sqlite3
+
+# PDFs de fichas de gestoras (curación local, NO SUBIR)
+datos/

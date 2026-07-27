@@ -134,6 +134,12 @@ with st.sidebar:
     # === PREFERENCIAS CLÁSICAS ===
     max_activa = st.slider("Límite Gestión Activa (Suave)", 0.0, 1.0, 0.20, help="El motor penalizará si supera este %")
 
+    # === NUEVO V4: LÍMITE DURO DE FONDOS ALTERNATIVOS ===
+    st.caption("Fondos Alternativos: Estrategias (ej. Retorno Absoluto, Long/Short) diseñadas para comportarse de forma descorrelacionada al mercado, aportando estabilidad cuando la bolsa y los bonos tradicionales caen.")
+    max_alt_pct = st.slider("Exposición máxima a Alternativos", 0, 100, 15, format="%d%%")
+    st.caption("(Recomendado: máx. 20% por coste de oportunidad y altas comisiones)")
+    max_alt_weight = max_alt_pct / 100.0
+
     pref_etf = st.select_slider(
         "Vehículo", 
         options=[-1.0, -0.5, 0.0, 0.5, 1.0], 
@@ -182,7 +188,8 @@ if calcular:
             preference_hedged_rf=pref_hedged_rf,
             max_activa=max_activa,
             exclude_strategies=estrategias_a_excluir, # Nivel 1 variable
-            estrategias_bandas=estrategias_bandas     # Nivel 3 variable
+            estrategias_bandas=estrategias_bandas,    # Nivel 3 variable
+            max_alt_weight=max_alt_weight             # Nivel 1: límite duro de alternativos
         )
 
     # ==============================================================================
@@ -194,6 +201,9 @@ if calcular:
         # --- A. CÁLCULO DE KPIs REALES (AUDITORÍA VISUAL) ---
         peso = resultado['Peso_Optimizado'].values
         peso_rf_total = (resultado['Peso_Optimizado'] * resultado['is_RF_Universe']).sum()
+
+        # Exposición real a Fondos Alternativos (para verificar el límite duro)
+        peso_alt_total = (resultado['Peso_Optimizado'] * resultado['is_Alt']).sum()
         
         # Cálculo Duración Real (Renormalizada)
         dur_bruta = (resultado['Peso_Optimizado'] * resultado['RF_Duracion']).sum()
@@ -212,11 +222,12 @@ if calcular:
         else: cal_txt = "⚠️ Datos Insuf."
 
         # --- B. MOSTRAR KPIs ---
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
         kpi1.metric("Fondos Seleccionados", len(resultado))
         kpi2.metric("Riesgo Cartera (SRRI)", f"{(resultado['EscalaRiesgo'] * resultado['Peso_Optimizado']).sum():.2f}", f"Obj: {target_riesgo}")
         kpi3.metric("Duración RF (Años)", f"{dur_real:.1f}", f"Obj: {target_duracion}")
         kpi4.metric("Calidad Crediticia", cal_txt, f"Score: {cal_real:.1f}")
+        kpi5.metric("Exposición Alternativos", f"{peso_alt_total:.1%}", f"Límite: {max_alt_weight:.0%}", delta_color="off")
 
         # --- C. GRÁFICOS Y TABLA ---
         col_graf, col_tabla = st.columns([1, 2])

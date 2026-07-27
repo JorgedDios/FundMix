@@ -63,6 +63,12 @@ def get_data_from_db():
     # (no quiero tener en cuenta la RV)
     df['is_RF_Universe'] = is_rf.astype(int)
 
+    # === NUEVO: BANDERA DE FONDOS ALTERNATIVOS ===
+    # Bandera binaria (1/0) para los fondos con exposición alternativa (Expo_Alt=1).
+    # Se usa para acotar su peso total en la cartera (restricción dura).
+    df['is_Alt'] = (df['Expo_Alt'].fillna(0) == 1).astype(int)
+    # ==============================================
+
     # BLINDAJE DE DATOS (Lógica Defensiva)
     #  Tratamiento de Calidad Crediticia:
     # - Si es RV: Ponemos 0 (No aplica, no afecta al promedio).
@@ -120,7 +126,9 @@ def optimize_portfolio(df, user_targets,
                        exclude_strategies=None,
                        max_activa=None,
                        # === NUEVO V3: BANDAS DE ESTILO ===
-                       estrategias_bandas=None):
+                       estrategias_bandas=None,
+                       # === NUEVO V4: LÍMITE DURO DE FONDOS ALTERNATIVOS ===
+                       max_alt_weight=0.15):
     """
     Paso 2: El Motor Matemático (CVXPY).
     
@@ -146,7 +154,7 @@ def optimize_portfolio(df, user_targets,
 
     # === NUEVO V2: CONTROL DE SEGURIDAD POR SI EL FILTRO ELIMINA TODOS LOS FONDOS ===
     if n_funds == 0:
-        print("❌ Tras aplicar los filtros, no quedan fondos en el universo.")
+        print("Tras aplicar los filtros, no quedan fondos en el universo.")
         return None
     # ==============================================================================
 
@@ -170,6 +178,14 @@ def optimize_portfolio(df, user_targets,
         if target_val == 0.0 and col in df.columns and not col.startswith('RF_'):
             constraints.append(w @ df[col].values == 0)
 
+    # === NUEVO V4: LÍMITE DURO DE EXPOSICIÓN A ALTERNATIVOS ===
+    # La suma de pesos de los fondos con Expo_Alt=1 no puede superar max_alt_weight.
+    # 'w @ is_Alt' es una expresión AFÍN (var * constantes 0/1); 'afín <= constante'
+    # es una restricción convexa válida en DCP. No se divide por 'w'.
+    if max_alt_weight is not None:
+        constraints.append(w @ df['is_Alt'].values <= max_alt_weight)
+    # ==========================================================
+
     # --- C. FUNCIÓN OBJETIVO (EL ERROR A MINIMIZAR) ---
     error_total = 0
     
@@ -183,7 +199,7 @@ def optimize_portfolio(df, user_targets,
     # diccionario.items() returns clave, valor.
     for col, target_val in user_targets.items():
         if col not in df.columns:
-            print(f"⚠️ Aviso: La columna '{col}' no existe en la BBDD. Se ignora.")
+            print(f"Aviso: La columna '{col}' no existe en la BBDD. Se ignora.")
             continue
             # continue ignora y sigue.
 
@@ -355,11 +371,11 @@ def optimize_portfolio(df, user_targets,
 
 # --- BLOQUE DE EJECUCIÓN (AUDITORIA) (PARA PROBARLO) ---
 if __name__ == "__main__":
-    print("🚀 Iniciando Motor FundMix v2...")
+    print("Iniciando Motor FundMix v2...")
     
     # 1. Cargar Datos
     df_fondos = get_data_from_db()
-    print(f"✅ Datos cargados: {len(df_fondos)} fondos disponibles.")
+    print(f"Datos cargados: {len(df_fondos)} fondos disponibles.")
     
     # 2. Definir un Objetivo de Prueba (EL USUARIO)
     # Vamos a pedir una cartera "60/40 Clásica"
@@ -387,9 +403,9 @@ if __name__ == "__main__":
     limite_activa_suave = 0.20 # Máximo 20% en fondos de EstiloGestion='Activa'
     # =========================================================================
 
-    print(f"\n🎯 Objetivos del usuario: {objetivos_usuario}")
-    print(f"🚫 Estrategias excluidas: {estrategias_prohibidas}")
-    print(f"⚖️ Límite Gestión Activa (Suave): {limite_activa_suave * 100}%")
+    print(f"\n Objetivos del usuario: {objetivos_usuario}")
+    print(f" Estrategias excluidas: {estrategias_prohibidas}")
+    print(f" Límite Gestión Activa (Suave): {limite_activa_suave * 100}%")
     
     # 3. Optimizar
     # === NUEVO V2: PASAMOS LAS VARIABLES EXTRA AL OPTIMIZADOR ===
@@ -409,7 +425,7 @@ if __name__ == "__main__":
     # verifica si el optimizador tuvo éxito. A veces cuando pides algo imposible
     # el optimizador falla y devuelve None, evitamos que el programa explote por imprimir resultados de un None
     if resultado is not None:
-        print("\n✨ CARTERA RECOMENDADA ✨")
+        print("\n CARTERA RECOMENDADA ")
         
         # A. CONSTRUCCIÓN DINÁMICA DE COLUMNAS
         # Columnas fijas (Identidad)
@@ -441,18 +457,18 @@ if __name__ == "__main__":
         print(resultado[cols_to_show].to_string(index=False))
         
         # B. AUDITORÍA DINÁMICA (Bucle)
-        print(f"\n📊 Auditoría de Objetivos:")
+        print(f"\n Auditoría de Objetivos:")
 
         # sacamos el vector columna de pesos para tenerlos en un vector y poder hacer operaciones matermaticas con ellos
         peso = resultado['Peso_Optimizado'].values
 
         # Calculamos cuánto pesa la Renta Fija en total para poder "des-diluir" sus métricas
         peso_total_rf = np.dot(peso, resultado['is_RF_Universe'].values)
-        print(f"   ℹ️ Peso total Renta Fija: {peso_total_rf:.2%}")
+        print(f"    Peso total Renta Fija: {peso_total_rf:.2%}")
 
         # === NUEVO V2: IMPRIMIMOS EL PESO TOTAL DE LA GESTIÓN ACTIVA PARA AUDITORÍA ===
         peso_total_activa = np.dot(peso, resultado['is_Activa'].values)
-        print(f"   ℹ️ Peso total Gestión Activa: {peso_total_activa:.2%} (Límite solicitado: {limite_activa_suave:.2%})")
+        print(f"    Peso total Gestión Activa: {peso_total_activa:.2%} (Límite solicitado: {limite_activa_suave:.2%})")
         # ==============================================================================
         
         for metrica, valor_objetivo in objetivos_usuario.items():
@@ -492,9 +508,9 @@ if __name__ == "__main__":
                     elif valor_real <= 5.5: cal_txt = "BB (High Yield)"
                     elif valor_real <= 6.5: cal_txt = "B (Speculative)"
                     elif valor_real <= 10.0: cal_txt = "C/D (Riesgo Alto)"
-                    else: cal_txt = "⚠️ DATOS INSUFICIENTES (Penalizado) Por favor, contacte con soporte para poder rellenar el dato faltante o eliminar dicho fondo"
+                    else: cal_txt = " DATOS INSUFICIENTES (Penalizado) Por favor, contacte con soporte para poder rellenar el dato faltante o eliminar dicho fondo"
                     
-                    mensaje_extra = f"  👉 Equivale a: {cal_txt}"
+                    mensaje_extra = f"   Equivale a: {cal_txt}"
 
 
                 # calcula lo que nos equivocamos
@@ -503,7 +519,7 @@ if __name__ == "__main__":
                 # Mostramos resultado (todo trasparente para que el usuario juzgue la calidad de la solución)
                 print(f"   - {metrica}: {valor_real:.2f} (Meta: {valor_objetivo}) | Desv: {diff:.2f}{mensaje_extra}")
             else:
-                print(f"   ⚠️ No se pudo auditar {metrica} (Columna no encontrada)")
+                print(f"    No se pudo auditar {metrica} (Columna no encontrada)")
         
     else:
-        print("❌ No se encontró solución óptima.")
+        print(" No se encontró solución óptima.")

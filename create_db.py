@@ -1,6 +1,5 @@
 import sqlite3
 
-
 DB_FILE = 'FundMix.db'
 
 def create_schema():
@@ -22,6 +21,8 @@ def create_schema():
             TipoProducto TEXT,     -- 'ETF' o 'Fondo'
             
             -- CARACTERÍSTICAS
+            EstiloGestion TEXT,    -- 'Activa' o 'Pasiva'
+            Estrategia TEXT,       -- 'Core', 'Value', 'Growth', etc.
             PoliticaDiv TEXT,      -- 'Acc' o 'Dist'
             Divisa TEXT,           -- 'EUR', 'USD', 'GBP'...
             EsHedged TEXT,         -- 'Si' o 'No' (Unificado)
@@ -39,7 +40,16 @@ def create_schema():
             -- GEO RENTA VARIABLE (Suman 1.0 dentro de la parte RV)
             Geo_RV_USA REAL DEFAULT 0,
             Geo_RV_Europa REAL DEFAULT 0,
-            Geo_RV_Emergentes REAL DEFAULT 0,
+            Geo_RV_China REAL DEFAULT 0,
+            Geo_RV_India REAL DEFAULT 0,
+            Geo_RV_Taiwan REAL DEFAULT 0,
+            Geo_RV_Korea REAL DEFAULT 0,
+            Geo_RV_Brasil REAL DEFAULT 0,
+            -- === NUEVO V2.1: AÑADIDO JAPÓN Y CANADÁ ===
+            Geo_RV_Japon REAL DEFAULT 0,
+            Geo_RV_Canada REAL DEFAULT 0,
+            -- ===========================================
+            Geo_RV_Emergentes_Otros REAL DEFAULT 0,
             Geo_RV_Otros REAL DEFAULT 0,
             
             -- GEO RENTA FIJA (Suman 1.0 dentro de la parte RF)
@@ -67,12 +77,18 @@ def create_schema():
             -- RENTABILIDAD
             Ret_1Y REAL,
             Ret_3Y_Ann REAL,
-            Ret_5Y_Ann REAL
+            Ret_5Y_Ann REAL,
+            
+            -- RATIOS INFORMATIVOS (NIVEL DASHBOARD)
+            Volatilidad_3Y REAL,
+            Sharpe_3Y REAL,
+            Alpha_3Y REAL,
+            Beta_3Y REAL
         )
     """)
     conn.commit()
     conn.close()
-    print(f"✅ Esquema de BBDD creado correctamente.")
+    print(" Esquema de BBDD v2.1 creado correctamente.")
 
 def insert_initial_data():
     conn = sqlite3.connect(DB_FILE)
@@ -88,23 +104,25 @@ def insert_initial_data():
             # 1. S&P 500 ETF (Acc, USD, Sin cubrir)
             'ISIN': 'IE00B5BMR087', 'Nombre': 'iShares Core S&P 500', 'Ticker': 'CSPX',
             'Gestora': 'iShares', 'TipoProducto': 'ETF', 
+            'EstiloGestion': 'Pasiva', 'Estrategia': 'Core',
             'PoliticaDiv': 'Acc', 'Divisa': 'USD', 'EsHedged': 'No',
-            'TER': 0.0007, 'EscalaRiesgo': 6, 'ClaseActivo': 'RV',
+            'TER': 0.0007, 'EscalaRiesgo': 5, 'ClaseActivo': 'RV',
             'Expo_RV': 1.0, 
             'Geo_RV_USA': 1.0, 
             # Sectores (Tec, Sal, Fin, Con, Ind, Ene, Otr)
-            'Sec_Tecnologia': 0.30, 'Sec_Salud': 0.13, 'Sec_Finanzas': 0.12, 
-            'Sec_Consumo': 0.10, 'Sec_Industrial': 0.08, 'Sec_Energia': 0.04, 'Sec_Otros': 0.23,
+            'Sec_Tecnologia': 0.3848, 'Sec_Salud': 0.0829, 'Sec_Finanzas': 0.1127, 
+            'Sec_Consumo': 0.1424, 'Sec_Industrial': 0.0828, 'Sec_Energia': 0.0313, 'Sec_Otros': 0.1631,
             # Detalles RF (Todo 0)
             'RF_Duracion': 0.0, 'RF_Calidad': None, 
             'RF_Gobierno': 0.0, 'RF_Corporativo': 0.0, 'RF_Yield': 0.0,
             # Rentabilidad
-            'Ret_1Y': 0.25, 'Ret_3Y_Ann': 0.10, 'Ret_5Y_Ann': 0.12
+            'Ret_1Y': 0.2946, 'Ret_3Y_Ann': 0.2329, 'Ret_5Y_Ann': 0.1384
         },
         {
             # 2. Bonos Globales ETF (Acc, EUR, Cubierto) - AQUÍ SÍ HAY DATOS RF
             'ISIN': 'IE00BDBRDM35', 'Nombre': 'iShares Global Agg Bond Eur Hedged', 'Ticker': 'AGGH',
             'Gestora': 'iShares', 'TipoProducto': 'ETF',
+            'EstiloGestion': 'Pasiva', 'Estrategia': 'Core',
             'PoliticaDiv': 'Acc', 'Divisa': 'EUR', 'EsHedged': 'Si',
             'TER': 0.0010, 'EscalaRiesgo': 3, 'ClaseActivo': 'RF',
             'Expo_RF': 1.0,
@@ -117,22 +135,24 @@ def insert_initial_data():
             'Ret_1Y': 0.04, 'Ret_3Y_Ann': -0.02, 'Ret_5Y_Ann': 0.01
         },
         {
-            # 3. Fondo Indexado Mundo (Fondo, Acc, EUR, Sin cubrir)
-            'ISIN': 'LU0996182563', 'Nombre': 'Amundi Index MSCI World', 'Ticker': None,
-            'Gestora': 'Amundi', 'TipoProducto': 'Fondo',
+            # 3. EMERGENTES (Ejemplo del nuevo desglose)
+            'ISIN': 'IE0031786696', 'Nombre': 'Vanguard Emerging Markets Stock Index', 'Ticker': None,
+            'Gestora': 'Vanguard', 'TipoProducto': 'Fondo',
+            'EstiloGestion': 'Pasiva', 'Estrategia': 'Core',
             'PoliticaDiv': 'Acc', 'Divisa': 'EUR', 'EsHedged': 'No',
-            'TER': 0.0030, 'EscalaRiesgo': 6, 'ClaseActivo': 'RV',
+            'TER': 0.0023, 'EscalaRiesgo': 6, 'ClaseActivo': 'RV',
             'Expo_RV': 1.0,
-            # Geo
-            'Geo_RV_USA': 0.68, 'Geo_RV_Europa': 0.20, 'Geo_RV_Otros': 0.12,
+            # Geo (Desglosado)
+            'Geo_RV_China': 0.202, 'Geo_RV_India': 0.107, 'Geo_RV_Taiwan': 0.266, 
+            'Geo_RV_Korea': 0.232, 'Geo_RV_Brasil': 0.038, 'Geo_RV_Emergentes_Otros': 0.155,
             # Sectores
-            'Sec_Tecnologia': 0.22, 'Sec_Salud': 0.12, 'Sec_Finanzas': 0.14, 
-            'Sec_Consumo': 0.10, 'Sec_Industrial': 0.10, 'Sec_Energia': 0.05, 'Sec_Otros': 0.27,
+            'Sec_Tecnologia': 0.438, 'Sec_Salud': 0.023, 'Sec_Finanzas': 0.178, 
+            'Sec_Consumo': 0.110, 'Sec_Industrial': 0.068, 'Sec_Energia': 0.033, 'Sec_Otros': 0.150,
             # Detalles RF (Todo 0)
             'RF_Duracion': 0.0, 'RF_Calidad': None,
             'RF_Gobierno': 0.0, 'RF_Corporativo': 0.0, 'RF_Yield': 0.0,
             # Rentabilidad
-            'Ret_1Y': 0.20, 'Ret_3Y_Ann': 0.08, 'Ret_5Y_Ann': 0.10
+            'Ret_1Y': 0.5010, 'Ret_3Y_Ann': 0.2122, 'Ret_5Y_Ann': 0.0832
         }
     ]
 
@@ -169,10 +189,10 @@ def insert_initial_data():
             count += 1
 
         conn.commit()
-        print(f"✅ Datos Insertados (Modo Robusto): {count} fondos procesados correctamente.")
+        print(f" Datos Insertados (Modo Robusto): {count} fondos procesados correctamente.")
         
     except Exception as e:
-        print(f"❌ Error insertando datos: {e}")
+        print(f" Error insertando datos: {e}")
         
     conn.close()
 
