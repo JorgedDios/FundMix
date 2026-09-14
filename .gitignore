@@ -39,3 +39,7 @@ Thumbs.db
 datos/
 # Feature 002: backups con timestamp del Golden Record (datos/ ya está ignorado)
 universo_fundmix.csv.bak_*
+
+# Notas internas de trabajo
+docs_proyecto/
+project_summary.md
