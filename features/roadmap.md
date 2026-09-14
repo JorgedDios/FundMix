@@ -39,7 +39,16 @@ Esta es la zona de trabajo activa. Las *features* actuales deben enfocarse exclu
 - **Objetivo:** Reducir la fricción del mantenimiento del "Golden Record" conectando el sistema a fuentes de datos sin perder el enfoque "Boutique Quant".
 - **Iniciativas:**
   - **(Feature 001 - ✅ Completada · 2026-07-25):** Integración del protocolo MCP para consultar métricas públicas fiables (TER, AUM, Volatilidad, SRRI) directamente desde el servidor del bróker y volcarlas al CSV local. Universo inicial cargado: **64 fondos** en `FundMix.db` (RV/RF/Monetario/Alternativo enrutados por la Convención Dinámica; 2 filas fantasma en blanco pendientes de ISIN). Hotfix arquitectónico incluido: columna `Expo_Alt` + restricción dura `max_alt_weight` en el motor y KPI en la UI.
-  - **(Feature 002 - Próximamente):** Extracción automatizada de datos complejos (Geografía Pura, Duración de bonos, Calidad Crediticia real) mediante análisis de Factsheets oficiales en PDF proporcionados por las gestoras.
+  - **(Feature 002 - ✅ Completada · 2026-07-30):** Extracción automatizada de datos complejos (Geografía Pura, Duración de bonos, Calidad Crediticia real) mediante análisis de Factsheets oficiales en PDF. Pipeline en dos fases sin API de pago (`skills/procesar_pdfs.py`: `extract` → el agente lee los `.txt` condensados → `apply`), con condensación de documentos al 20% y validación de coherencia sobre la fila resultante. **86 factsheets procesados, 1.467 celdas escritas, 0 violaciones de Data Shielding.** Universo: **89 fondos**. Herramientas auxiliares: `limpiar_csv.py` (reparación estructural), `fix_geografia.py` (bypass acotado y auditado del blindaje) y `rellenar_manual.py` (relleno asistido por consola).
+  - **(Feature 003 - 📋 Planificada):** **Enriquecimiento Web.** Ver detalle abajo.
+
+#### Feature 003: Enriquecimiento Web (scraping de geografía y sectores)
+
+- **Problema que resuelve:** los informes semestrales de la CNMV —única fuente disponible para los ~50 fondos españoles del universo— **no publican desglose geográfico, sectorial ni duración efectiva**. Solo aportan vocación inversora, perfil de riesgo, ratio de gastos y el reparto RF/RV/liquidez. Esto deja la cobertura de `Sec_*` en el 50,6% y la de `Geo_RV_*` en el 73,0%, justo las dimensiones que el optimizador usa como restricciones de Nivel 2 (prioridad máxima).
+- **Alcance:** completar `Geo_RV_*`, `Geo_RF_*` y `Sec_*` de los fondos cuyo folleto no los publica, más las métricas a 3 años (`Sharpe_3Y`, `Alpha_3Y`, `Beta_3Y`, `Volatilidad_3Y`), hoy al 26,1%.
+- **Fuentes candidatas:** Morningstar (ficha del fondo por ISIN), Yahoo Finance (`yfinance`, ya en `requirements.txt`) o el propio MCP del bróker si expone estos desgloses.
+- **Restricciones heredadas de la Constitución:** el principio *Boutique Quant* dice explícitamente que preferimos carecer de un dato antes que "raspar HTML inestable". Por tanto la feature debe: (a) fijar la fuente por ISIN y registrarla en el CSV o en un log de procedencia, (b) validar cada extracción contra los rangos y sumas del pipeline actual, y (c) **reutilizar el Data Shielding y el guard de coherencia de fila ya implementados** en `skills/procesar_pdfs.py` en lugar de reescribirlos.
+- **Riesgo principal:** el scraping se rompe en silencio cuando cambia el HTML. Necesita una prueba canario que falle ruidosamente si la estructura cambia, antes de escribir nada en el Golden Record.
 
 ---
 

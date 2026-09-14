@@ -18,6 +18,10 @@ Optimizador de carteras basado en minimización de Tracking Error usando Program
 - `python skills/check_dcp.py` — Ejecuta esto SIEMPRE que modifiques el optimizador para validar que las matemáticas siguen siendo convexas.
 - `python skills/ingest_csv.py` — Ejecuta esto para volcar el CSV a la base de datos de forma segura.
 - `python app.py` — Arranca la interfaz visual.
+- `python skills/auditar_huecos.py` — Informe de qué fondos están completos y qué columnas le faltan a cada uno.
+- `python skills/procesar_pdfs.py extract|apply|estado` — Pipeline de factsheets PDF → CSV (Feature 002).
+- `python skills/rellenar_manual.py <ISIN>` — Relleno asistido por consola de las celdas vacías de un fondo.
+- `python skills/limpiar_csv.py` — Reparación estructural del CSV (entrecomillado, ISINs, duplicados). Idempotente.
 
 ## No hagas (Reglas estrictas de alto nivel)
 - **Matemáticas y Seguridad:** NUNCA rompas las reglas de Programación Convexa Disciplinada (DCP) ni las normas de inyección SQL detalladas en el `tech-stack.md`.
