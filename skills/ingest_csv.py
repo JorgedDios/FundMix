@@ -29,14 +29,16 @@ def ingest_data():
         with sqlite3.connect(DB_FILE) as conn:
             c = conn.cursor()
 
-            # Hotfix esquema: asegurar la columna Expo_Alt (exposición a Alternativos).
-            # Idempotente: solo la añade si aún no existe. SQLite la agrega al final,
-            # lo cual es irrelevante porque la inserción es dinámica por diccionario/PRAGMA.
+            # El esquema es responsabilidad exclusiva de create_db.py. Aquí solo se
+            # comprueba que la BBDD sea la esperada: si faltara una columna, el INSERT
+            # dinámico de más abajo la omitiría SIN AVISAR y perderíamos el dato en
+            # silencio, así que preferimos abortar de forma ruidosa.
             c.execute("PRAGMA table_info(fondos)")
-            existing_cols = [col[1] for col in c.fetchall()]
-            if "Expo_Alt" not in existing_cols:
-                c.execute("ALTER TABLE fondos ADD COLUMN Expo_Alt REAL DEFAULT 0")
-                print("🔧 Columna Expo_Alt añadida a la tabla 'fondos'.")
+            columnas_bbdd = {col[1] for col in c.fetchall()}
+            if "Expo_Alt" not in columnas_bbdd:
+                print("❌ La BBDD no tiene la columna 'Expo_Alt' (esquema anterior a Feature 001).")
+                print("   Recrea el esquema con: python create_db.py   [OJO: borra la tabla]")
+                sys.exit(1)
 
             # Limpiar la tabla antes de la carga masiva (carga destructiva/fresca)
             c.execute("DELETE FROM fondos")
