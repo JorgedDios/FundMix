@@ -22,7 +22,19 @@ def create_schema():
             
             -- CARACTERÍSTICAS
             EstiloGestion TEXT,    -- 'Activa' o 'Pasiva'
-            Estrategia TEXT,       -- 'Core', 'Value', 'Growth', etc.
+            -- Dominio cerrado de 13 valores (fuente de verdad: DOMINIOS en
+            -- skills/procesar_pdfs.py). 'Alternativo' es categoría padre de las 3 últimas:
+            -- excluirlo o ponerle una banda de estilo las arrastra (ver
+            -- FAMILIAS_ESTRATEGIA en optimizer.py).
+            -- OJO: este es el eje de ESTILO/FACTOR, independiente de ClaseActivo, que es
+            -- el eje de COMPOSICIÓN. Un fondo Mixto puede ser Value, Defensivo o
+            -- Flexible; por eso no existe una Estrategia llamada 'Mixto'.
+            -- 'Small Cap' captura el factor TAMAÑO (SMB), que tiene beta, volatilidad y
+            -- ciclicidad propias: no debe confundirse con 'Core' (mercado amplio).
+            Estrategia TEXT,       -- 'Core', 'Value', 'Growth', 'Dividendo', 'Flexible',
+                                   -- 'Small Cap', 'Alternativo', 'Inmobiliario',
+                                   -- 'Quality', 'Defensivo',
+                                   -- 'Event Driven', 'Market Neutral', 'Multiestrategia'
             PoliticaDiv TEXT,      -- 'Acc' o 'Dist'
             Divisa TEXT,           -- 'EUR', 'USD', 'GBP'...
             EsHedged TEXT,         -- 'Si' o 'No' (Unificado)
@@ -30,14 +42,23 @@ def create_schema():
             -- METADATOS
             TER REAL,
             EscalaRiesgo INTEGER,  -- Antes SRRI
-            ClaseActivo TEXT,      -- 'RV', 'RF', 'Monetario'
+            ClaseActivo TEXT,      -- 'RV', 'RF', 'Mixto', 'Monetario', 'Alternativo'
             
             -- EXPOSICIONES DE CLASE (Suman 1.0)
             Expo_RV REAL DEFAULT 0,
             Expo_RF REAL DEFAULT 0,
             Expo_Monet REAL DEFAULT 0,
+            Expo_Alt REAL DEFAULT 0,   -- Alternativos (oro, retorno absoluto, market neutral...)
             
-            -- GEO RENTA VARIABLE (Suman 1.0 dentro de la parte RV)
+            -- GEO RENTA VARIABLE
+            -- CONVENCIÓN: reparto DENTRO de la renta variable del fondo, no sobre el
+            -- fondo entero. Por tanto Sum(Geo_RV_*) = 1.0 siempre que el fondo tenga algo
+            -- de bolsa, INDEPENDIENTEMENTE de cuánta bolsa lleve.
+            --   Fondo 100% bolsa USA        -> Expo_RV=1.00, Geo_RV_USA=1.00
+            --   Mixto 10% bolsa (toda USA)  -> Expo_RV=0.10, Geo_RV_USA=1.00
+            -- Es lo que publican las fichas ("Market allocation" del fondo de renta
+            -- variable). El motor calcula la exposición absoluta multiplicando por la
+            -- máscara Expo_RV: 0.10 * 1.00 = 10% del fondo en bolsa USA.
             Geo_RV_USA REAL DEFAULT 0,
             Geo_RV_Europa REAL DEFAULT 0,
             Geo_RV_China REAL DEFAULT 0,
@@ -52,7 +73,10 @@ def create_schema():
             Geo_RV_Emergentes_Otros REAL DEFAULT 0,
             Geo_RV_Otros REAL DEFAULT 0,
             
-            -- GEO RENTA FIJA (Suman 1.0 dentro de la parte RF)
+            -- GEO RENTA FIJA
+            -- Misma convención: reparto DENTRO de la parte sensible a tipos del fondo.
+            -- Sum(Geo_RF_*) = 1.0 si el fondo tiene bonos o monetario. El motor usa la
+            -- máscara Expo_Tipos (= Expo_RF + Expo_Monet) para pasarlo a absoluto.
             Geo_RF_USA REAL DEFAULT 0,
             Geo_RF_Europa REAL DEFAULT 0,
             Geo_RF_Emergentes REAL DEFAULT 0,

@@ -56,14 +56,24 @@ with st.sidebar:
     st.header("🎯 Define tu Objetivo")
     
     # --- BLOQUE 1: GEOGRAFÍA (RENTA VARIABLE) ---
+    # OJO: estos porcentajes son el reparto DENTRO de la Renta Variable, no sobre el
+    # total de la cartera. Es el modelo top-down estándar: primero decides el 60/40
+    # entre clases (slider "Peso Total Renta Fija") y aquí repartes tu bolsa.
     with st.expander("🌍 Geografía (Renta Variable)", expanded=True):
-        target_usa = st.slider("🇺🇸 Exposición EE.UU.", 0.0, 1.0, 0.60, step=0.05)
-        target_europa = st.slider("🇪🇺 Exposición Europa", 0.0, 1.0, 0.20, step=0.05)
+        st.caption("Reparto **dentro de tu Renta Variable**. Deberían sumar ≤ 100%; "
+                   "lo que dejes sin asignar queda libre para el optimizador.")
+        target_usa = st.slider("🇺🇸 EE.UU. (% de tu RV)", 0.0, 1.0, 0.60, step=0.05)
+        target_europa = st.slider("🇪🇺 Europa (% de tu RV)", 0.0, 1.0, 0.20, step=0.05)
         # === NUEVO V2.1: SLIDERS PARA JAPÓN, CANADÁ Y EMERGENTES TOTALES ===
-        target_emerg = st.slider("🌏 Exposición Emergentes (Total)", 0.0, 1.0, 0.10, step=0.05)
-        target_japon = st.slider("🇯🇵 Exposición Japón", 0.0, 1.0, 0.0, step=0.05)
-        target_canada = st.slider("🇨🇦 Exposición Canadá", 0.0, 1.0, 0.0, step=0.05)
+        target_emerg = st.slider("🌏 Emergentes, total (% de tu RV)", 0.0, 1.0, 0.10, step=0.05)
+        target_japon = st.slider("🇯🇵 Japón (% de tu RV)", 0.0, 1.0, 0.0, step=0.05)
+        target_canada = st.slider("🇨🇦 Canadá (% de tu RV)", 0.0, 1.0, 0.0, step=0.05)
         # =================================================================
+        _suma_geo = target_usa + target_europa + target_emerg + target_japon + target_canada
+        if _suma_geo > 1.0:
+            st.warning(f"Has repartido un {_suma_geo:.0%} de tu Renta Variable. "
+                       "Al pasar del 100% el motor no podrá cumplir todos los objetivos "
+                       "y repartirá el error entre ellos.")
     
     # --- BLOQUE 2: RENTA FIJA PRO ---
     with st.expander("🛡️ Renta Fija Avanzada", expanded=True):
@@ -92,17 +102,51 @@ with st.sidebar:
     # --- BLOQUE 3: RIESGO Y SECTORES ---
     with st.expander("⚠️ Perfil de Riesgo", expanded=False):
         target_riesgo = st.slider("Nivel SRRI (1-7)", 1.0, 7.0, 4.0, step=0.1)
-        st.info("El sistema buscará fondos que promedien este riesgo exacto.")
-
+        st.caption("Indicador informativo: el motor no optimiza sobre el SRRI, "
+                   "porque el riesgo real ya viene determinado por el reparto "
+                   "entre clases de activo, la geografía y la duración. "
+                   "En el panel verás el SRRI resultante de tu cartera.")
     st.header("⚙️ Preferencias y Filtros")
     
     # === NIVEL 1 (HARD): EXCLUSIÓN DE ESTRATEGIAS ===
-    opciones_estrategia = ['Core', 'Value', 'Growth', 'Dividendo', 'Alternativo', 'Inmobiliario']
+    # Fuente de verdad única para los dos widgets (antes eran dos listas de 6 que no
+    # coincidían: 'Alternativo'/'Inmobiliario' no tenían banda y 'Quality'/'Defensivo'
+    # no se podían excluir).
+    ESTRATEGIAS_PRINCIPALES = ['Core', 'Value', 'Growth', 'Dividendo', 'Flexible',
+                               'Small Cap', 'Alternativo', 'Inmobiliario',
+                               'Quality', 'Defensivo']
+    # 'Alternativo' es categoría padre; estas son sus hijas. Solo se muestran si el
+    # usuario interactúa con el padre, para no saturar la interfaz.
+    SUBESTRATEGIAS_ALT = ['Event Driven', 'Market Neutral', 'Multiestrategia']
+
     estrategias_a_excluir = st.multiselect(
         "🚫 Estrategias a Excluir (0%)",
-        options=opciones_estrategia,
-        default=[] 
+        options=ESTRATEGIAS_PRINCIPALES,
+        default=[]
     )
+
+    # Submenú condicional: solo aparece si el usuario toca la categoría padre.
+    rescatadas = []
+    if 'Alternativo' in estrategias_a_excluir:
+        st.caption("↳ Se excluyen también Event Driven, Market Neutral y Multiestrategia. "
+                   "Marca las que quieras mantener disponibles:")
+        rescatadas = st.multiselect(
+            "Excepto estas subestrategias",
+            options=SUBESTRATEGIAS_ALT,
+            default=[],
+            key="rescate_alt"
+        )
+
+    # Si el usuario ha afinado, resolvemos la selección a nivel de hoja aquí y le decimos
+    # al motor que NO vuelva a expandir (si lo hiciera, desharía el rescate).
+    if rescatadas:
+        familia_alt = ['Alternativo'] + SUBESTRATEGIAS_ALT
+        exclusion_final = [e for e in estrategias_a_excluir if e != 'Alternativo']
+        exclusion_final += [s for s in familia_alt if s not in rescatadas]
+        expandir_familias = False
+    else:
+        exclusion_final = estrategias_a_excluir
+        expandir_familias = True
 
    # === NIVEL 3 (SOFT): BANDAS DE ESTILO (TILTING) ===
     st.markdown("---")
@@ -117,17 +161,26 @@ with st.sidebar:
         "Agresiva (75% - 100%)": (0.75, 1.0)
     }
     
-    # Lista completa de tus estrategias
-    todas_las_estrategias = ['Core', 'Value', 'Growth', 'Dividendo', 'Quality', 'Defensivo']
-    
     estrategias_bandas = {}
-    
+
     # Usamos st.columns para poner los selectores en 2 columnas y ahorrar espacio visual
     cols_est = st.columns(2)
-    for i, strat in enumerate(todas_las_estrategias):
+    for i, strat in enumerate(ESTRATEGIAS_PRINCIPALES):
         with cols_est[i % 2]:
             seleccion = st.selectbox(strat, options=list(bandas_dict.keys()), key=f"banda_{strat}")
             estrategias_bandas[strat] = bandas_dict[seleccion]
+
+    # Afinado opcional de la familia alternativa. La banda del padre y las de las hijas
+    # NUNCA coexisten: se sustituyen, para no superponer dos penalizaciones sobre los
+    # mismos fondos (contarían doble en la función objetivo).
+    if estrategias_bandas.get('Alternativo', (0.0, 1.0)) != (0.0, 1.0):
+        if st.checkbox("↳ Afinar la banda por subestrategia alternativa"):
+            del estrategias_bandas['Alternativo']
+            cols_sub = st.columns(2)
+            for i, sub in enumerate(SUBESTRATEGIAS_ALT):
+                with cols_sub[i % 2]:
+                    sel = st.selectbox(sub, options=list(bandas_dict.keys()), key=f"banda_{sub}")
+                    estrategias_bandas[sub] = bandas_dict[sel]
             
     st.markdown("---")
 
@@ -152,6 +205,18 @@ with st.sidebar:
         pref_hedged_rv = st.slider("Divisa RV", -1.0, 1.0, -1.0, help="Negativo = Sin Cubrir")
     with col_p2:
         pref_hedged_rf = st.slider("Divisa RF", -1.0, 1.0, 1.0, help="Positivo = Cubierta (Hedged)")
+
+    # Sesgo de gestión por clase de activo (modelo Core-Satellite).
+    # Un fondo mixto reparte su etiqueta entre ambas patas según su exposición real, así
+    # que pedir "bolsa pasiva + bonos activos" no genera un choque de restricciones.
+    st.caption("Estilo de gestión por clase (Core-Satellite):")
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        pref_activa_rv = st.slider("Gestión RV", -1.0, 1.0, 0.0,
+                                   help="Negativo = Indexada/Pasiva · Positivo = Activa")
+    with col_g2:
+        pref_activa_rf = st.slider("Gestión RF", -1.0, 1.0, 0.0,
+                                   help="Negativo = Indexada/Pasiva · Positivo = Activa")
     calcular = st.button("🚀 Optimizar Cartera", type="primary", use_container_width=True)
 
 # ==============================================================================
@@ -187,9 +252,12 @@ if calcular:
             preference_hedged_rv=pref_hedged_rv,
             preference_hedged_rf=pref_hedged_rf,
             max_activa=max_activa,
-            exclude_strategies=estrategias_a_excluir, # Nivel 1 variable
+            exclude_strategies=exclusion_final,        # Nivel 1 variable (ya resuelta)
             estrategias_bandas=estrategias_bandas,    # Nivel 3 variable
-            max_alt_weight=max_alt_weight             # Nivel 1: límite duro de alternativos
+            max_alt_weight=max_alt_weight,            # Nivel 1: límite duro de alternativos
+            expandir_familias=expandir_familias,      # Jerarquía padre-hijo de estrategias
+            preference_activa_rv=pref_activa_rv,      # Nivel 3: sesgo de gestión en bolsa
+            preference_activa_rf=pref_activa_rf       # Nivel 3: sesgo de gestión en bonos
         )
 
     # ==============================================================================
@@ -224,9 +292,9 @@ if calcular:
         # --- B. MOSTRAR KPIs ---
         kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
         kpi1.metric("Fondos Seleccionados", len(resultado))
-        kpi2.metric("Riesgo Cartera (SRRI)", f"{(resultado['EscalaRiesgo'] * resultado['Peso_Optimizado']).sum():.2f}", f"Obj: {target_riesgo}")
-        kpi3.metric("Duración RF (Años)", f"{dur_real:.1f}", f"Obj: {target_duracion}")
-        kpi4.metric("Calidad Crediticia", cal_txt, f"Score: {cal_real:.1f}")
+        kpi2.metric("Riesgo Cartera (SRRI)", f"{(resultado['EscalaRiesgo'] * resultado['Peso_Optimizado']).sum():.2f}")
+        kpi3.metric("Duración RF (Años)", f"{dur_real:.1f}", f"Obj: {target_duracion}", delta_color="off")
+        kpi4.metric("Calidad Crediticia", cal_txt, f"Score: {cal_real:.1f}", delta_color="off")
         kpi5.metric("Exposición Alternativos", f"{peso_alt_total:.1%}", f"Límite: {max_alt_weight:.0%}", delta_color="off")
 
         # --- C. GRÁFICOS Y TABLA ---
@@ -243,7 +311,7 @@ if calcular:
             st.subheader("📋 Tu Cartera Optimizada")
             # Preparamos tabla bonita
             tabla_visual = resultado[[
-                'Nombre', 'Ticker', 'ClaseActivo', 'RF_Duracion', 'EscalaRiesgo', 'Peso_Optimizado'
+                'Nombre', 'ClaseActivo', 'Peso_Optimizado',
             ]].copy()
             
             # Formato Porcentaje
@@ -256,7 +324,7 @@ if calcular:
             )
 
         # --- D. AUDITORÍA DETALLADA (EXPANDER) ---
-        with st.expander("🔍 Ver Auditoría de Desviaciones (Debug)"):
+        with st.expander("🔍 Ver Auditoría de Desviaciones "):
             st.write("Comparativa exacta entre lo que pediste y lo que la matemática ha conseguido:")
             
             audit_data = []

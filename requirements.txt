@@ -1,6 +1,7 @@
 cvxpy
 numpy
 pandas
+pdfplumber
 plotly
 streamlit
 yfinance

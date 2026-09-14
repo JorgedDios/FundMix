@@ -6,6 +6,25 @@ import numpy as np
 # Configuración
 DB_FILE = 'FundMix.db'
 
+# === JERARQUÍA DE ESTRATEGIAS (categoría padre -> familia) ===
+# 'Alternativo' actúa como categoría padre: excluirlo o ponerle una banda de estilo
+# afecta también a sus subestrategias. La familia se incluye a sí misma porque
+# 'Alternativo' es además un valor válido de la columna Estrategia.
+# Sin esto, excluir "Alternativo" desde la interfaz NO eliminaba los fondos cuya
+# Estrategia es 'Market Neutral' / 'Event Driven' / 'Multiestrategia' (tienen
+# 'Alternativo' en ClaseActivo, que es otra columna).
+FAMILIAS_ESTRATEGIA = {
+    'Alternativo': ['Alternativo', 'Event Driven', 'Market Neutral', 'Multiestrategia'],
+}
+
+
+def expandir_familias_estrategia(seleccion):
+    """Convierte categorías padre en su familia completa, conservando el orden y sin duplicar."""
+    expandida = []
+    for estrategia in seleccion or []:
+        expandida.extend(FAMILIAS_ESTRATEGIA.get(estrategia, [estrategia]))
+    return list(dict.fromkeys(expandida))
+
 def get_data_from_db():
     """
     Paso 1: Cargar los datos de SQLite a un DataFrame de Pandas.
@@ -22,17 +41,46 @@ def get_data_from_db():
     
     # ORDINAL ENCODING 
     # Definimos el mapa de traducción (diccionario)
+    # Escala ordinal inversa 1 (AAA, mejor) -> 10 (D, peor). El optimizador MINIMIZA
+    # este número, así que minimizar = buscar mejor calidad.
+    # Los sufijos +/- son imprescindibles: las agencias los usan y las fichas técnicas
+    # los publican tal cual ('A-', 'BBB+'). Sin ellos quedaban sin mapear (NaN) y el
+    # Data Shielding los castigaba con un 12 como si fueran bonos sin rating, haciendo
+    # que el motor huyera de fondos excelentes. Se interpolan a un tercio de escalón,
+    # que es la convención estándar al numerizar ratings.
     quality_map = {
-        'AAA': 1, 'AA': 2, 'A': 3, 
-        'BBB': 4, 'BB': 5, 'B': 6, 
-        'CCC': 7, 'CC': 8, 'C': 9, 'D': 10
+        'AAA': 1.0,
+        'AA+': 1.7, 'AA': 2.0, 'AA-': 2.3,
+        'A+': 2.7,  'A': 3.0,  'A-': 3.3,
+        'BBB+': 3.7, 'BBB': 4.0, 'BBB-': 4.3,
+        'BB+': 4.7,  'BB': 5.0,  'BB-': 5.3,
+        'B+': 5.7,   'B': 6.0,   'B-': 6.3,
+        'CCC+': 6.7, 'CCC': 7.0, 'CCC-': 7.3,
+        'CC': 8.0, 'C': 9.0, 'D': 10.0
     }
     
     # Aplicamos el mapa. 
     # Los que no sean bonos (ej. Acciones) tendrán nulos, los rellenamos con 0 o un valor neutro, previamente en el .filna(0)
 
-    # Aquí usamos un truco: Si es RV, le ponemos un 0 para que no afecte al promedio de riesgo de crédito
-    df['RF_Calidad_Num'] = df['RF_Calidad'].map(quality_map)
+    def _map_calidad(valor):
+        """Acepta rating textual ('BBB+') o el valor YA numérico en la escala 1-12.
+
+        Cuando la ficha de un fondo no publica un rating medio único —típico en mixtos y
+        en fondos flexibles— el gestor puede calcular a mano la media ponderada de su
+        cartera de bonos y anotarla directamente codificada (contando los 'sin rating'
+        como 12, igual que hace el Data Shielding). En ese caso se usa tal cual: pasarla
+        por quality_map devolvería NaN y el blindaje la castigaría con un 12 como si no
+        hubiera dato, destruyendo un cálculo que sí es real.
+        """
+        texto = str(valor).strip()
+        if not texto:
+            return np.nan
+        try:
+            return float(texto)                    # ya viene en la escala 1-12
+        except ValueError:
+            return quality_map.get(texto, np.nan)  # rating textual: 'AAA', 'BBB+'...
+
+    df['RF_Calidad_Num'] = df['RF_Calidad'].map(_map_calidad)
 
     
     # Convertimos TipoProducto a binario (para usarlo luego en penalizaciones)
@@ -63,37 +111,77 @@ def get_data_from_db():
     # (no quiero tener en cuenta la RV)
     df['is_RF_Universe'] = is_rf.astype(int)
 
-    # === NUEVO: BANDERA DE FONDOS ALTERNATIVOS ===
-    # Bandera binaria (1/0) para los fondos con exposición alternativa (Expo_Alt=1).
-    # Se usa para acotar su peso total en la cartera (restricción dura).
+    # === NUEVO V5: MÁSCARA CONTINUA DEL UNIVERSO SENSIBLE A TIPOS ===
+    # is_RF_Universe es BINARIA y se deriva de ClaseActivo, así que un fondo Mixto con
+    # un 80% de bonos vale 0 en ella. En el término de duración eso hace que el mixto
+    # aporte al numerador pero NO al denominador, inflando la duración media.
+    # Expo_Tipos es la versión continua: ese mixto pesa 0.8, que es lo correcto.
+    # Se incluye Expo_Monet porque un monetario tiene duración ~0 pero SÍ pertenece al
+    # universo de tipos; excluirlo distorsionaría la duración media al alza (medido:
+    # 4.348 con is_RF_Universe, 4.258 solo con Expo_RF, 3.760 con la suma correcta).
+    df['Expo_Tipos'] = df['Expo_RF'].fillna(0) + df['Expo_Monet'].fillna(0)
+    # ================================================================
+
+    # === BANDERA DE FONDOS ALTERNATIVOS (solo informativa) ===
+    # Igualdad estricta: marca los fondos PURAMENTE alternativos. Se conserva únicamente
+    # para la auditoría; el techo de alternativos ya NO la usa, porque un mixto con un 20%
+    # de alternativos valía 0 aquí y escapaba a una restricción dura de Nivel 1.
     df['is_Alt'] = (df['Expo_Alt'].fillna(0) == 1).astype(int)
     # ==============================================
 
     # BLINDAJE DE DATOS (Lógica Defensiva)
     #  Tratamiento de Calidad Crediticia:
-    # - Si es RV: Ponemos 0 (No aplica, no afecta al promedio).
-    # - Si es RF y es Nulo: Ponemos 12 (Peor que D). 
-    #  PENALIZACIÓN MÁXIMA a la incertidumbre.
-    
-    # Rellenamos RV con 0
-    df.loc[is_rv, 'RF_Calidad_Num'] = df.loc[is_rv, 'RF_Calidad_Num'].fillna(0.0)
-    
-    # Rellenamos RF con 12 (Castigo)
-    df.loc[is_rf, 'RF_Calidad_Num'] = df.loc[is_rf, 'RF_Calidad_Num'].fillna(12.0)
+    # - Con bonos reales y sin dato: 12 (Peor que D=10) -> PENALIZACIÓN MÁXIMA.
+    # - Sin bonos relevantes: 0 (No aplica, no afecta al promedio).
+    #
+    # La decisión NO puede depender de la etiqueta ClaseActivo: un fondo 'Mixto' con un
+    # 90% de bonos no entraba en is_rv NI en is_rf, así que caía al fillna(0.0) global de
+    # más abajo y acababa valiendo 0 = MEJOR QUE AAA. Es justo el bug que este blindaje
+    # existe para evitar. Por eso se decide por EXPOSICIÓN REAL.
+    #
+    # El criterio es Expo_Tipos (bonos + monetario), la MISMA máscara que usa el motor
+    # como denominador. Tiene que ser la misma: si un fondo pesa en el denominador de la
+    # calidad media, su valor debe estar blindado. Los monetarios invierten en papel
+    # comercial y depósitos, así que sí tienen riesgo de crédito y sí deben blindarse.
+    # El umbral del 5% evita castigar a un fondo de bolsa por una tesorería residual.
+    tiene_bonos = df['Expo_Tipos'] > 0.05
+    sin_dato = df['RF_Calidad_Num'].isna()
+
+    df.loc[tiene_bonos & sin_dato, 'RF_Calidad_Num'] = 12.0
+    df.loc[~tiene_bonos & sin_dato, 'RF_Calidad_Num'] = 0.0
 
     # COLUMNAS FRANCOTIRADOR (Para penalizar con precisión)
-    
+    #
+    # 'EsHedged' y 'EstiloGestion' son propiedades BINARIAS a nivel de ISIN: un fondo está
+    # cubierto o no lo está, es activo o es pasivo. Lo que hay que hacer continuo no es la
+    # bandera, sino CUÁNTA exposición de cada clase aporta ese fondo:
+    #
+    #     aportación = bandera_binaria (0/1)  ×  exposición_continua (0..1)
+    #
+    # Antes se hacía 'is_rv & is_hedged', y como is_rv se derivaba de ClaseActivo, un
+    # fondo Mixto cubierto NO disparaba ninguna de las cuatro banderas: las preferencias
+    # de divisa lo ignoraban por completo. Ahora un mixto cubierto 20/80 aporta 0.20 a
+    # "bolsa cubierta" y 0.80 a "bonos cubiertos", que es lo correcto.
+    es_hedged = is_hedged_global.astype(int)
+    expo_rv = df['Expo_RV'].fillna(0)
+
     # Caso A: Renta Variable
-    # 1. Es RV y está Cubierto (Para penalizar si ODIO el hedging en bolsa)
-    df['is_RV_Hedged'] = (is_rv & is_hedged_global).astype(int)
-    # 2. Es RV y NO está Cubierto (Para penalizar si QUIERO hedging en bolsa)
-    df['is_RV_Unhedged'] = (is_rv & ~is_hedged_global).astype(int)
-    
-    # Caso B: Renta Fija
-    # 3. Es RF y está Cubierto
-    df['is_RF_Hedged'] = (is_rf & is_hedged_global).astype(int)
-    # 4. Es RF y NO está Cubierto
-    df['is_RF_Unhedged'] = (is_rf & ~is_hedged_global).astype(int)
+    df['expo_RV_Hedged'] = es_hedged * expo_rv
+    df['expo_RV_Unhedged'] = (1 - es_hedged) * expo_rv
+
+    # Caso B: Renta Fija (usa Expo_Tipos: bonos + monetario, igual que el resto del motor)
+    df['expo_RF_Hedged'] = es_hedged * df['Expo_Tipos']
+    df['expo_RF_Unhedged'] = (1 - es_hedged) * df['Expo_Tipos']
+
+    # Caso C: Estilo de gestión descompuesto por clase de activo.
+    # Un fondo de autor gestiona activamente AMBAS patas, así que su etiqueta 'Activa' se
+    # reparte proporcionalmente: el 6.7% de bolsa de un mixto es bolsa gestionada
+    # activamente, y su 92% de bonos también. Esto permite pedir "bolsa pasiva + bonos
+    # activos" sin que un mixto genere un choque de restricciones.
+    df['expo_RV_Activa'] = df['is_Activa'] * expo_rv
+    df['expo_RV_Pasiva'] = (1 - df['is_Activa']) * expo_rv
+    df['expo_RF_Activa'] = df['is_Activa'] * df['Expo_Tipos']
+    df['expo_RF_Pasiva'] = (1 - df['is_Activa']) * df['Expo_Tipos']
 
     # === NUEVO V2: AGRUPACIÓN DE EMERGENTES PARA FACILITAR LOS OBJETIVOS DEL USUARIO ===
     cols_emergentes = ['Geo_RV_China', 'Geo_RV_India', 'Geo_RV_Taiwan', 'Geo_RV_Korea', 'Geo_RV_Brasil', 'Geo_RV_Emergentes_Otros']
@@ -128,7 +216,12 @@ def optimize_portfolio(df, user_targets,
                        # === NUEVO V3: BANDAS DE ESTILO ===
                        estrategias_bandas=None,
                        # === NUEVO V4: LÍMITE DURO DE FONDOS ALTERNATIVOS ===
-                       max_alt_weight=0.15):
+                       max_alt_weight=0.15,
+                       # === NUEVO V5: JERARQUÍA PADRE-HIJO EN ESTRATEGIAS ===
+                       expandir_familias=True,
+                       # === NUEVO V5: SESGO DE GESTIÓN POR CLASE DE ACTIVO ===
+                       preference_activa_rv=0.0,
+                       preference_activa_rf=0.0):
     """
     Paso 2: El Motor Matemático (CVXPY).
     
@@ -136,16 +229,25 @@ def optimize_portfolio(df, user_targets,
         df: DataFrame con los fondos.
         user_targets: Diccionario con los objetivos (del usuario) {Columna: ValorDecimal}.
                       Ej: {'Geo_RV_USA': 0.60, 'RF_Duracion': 5.0}
-        preference_value: Penalización suave. 
+        preference_value: Penalización suave.
                         0.0 = Indiferente.
                         > 0 Positivo (ej. 0.1) =   Usuario QUIERE esa caraterística, penaliza lo contrario
                         < 0 Negativo (ej. -0.1) = Usuario ODIA esta característica, penaliza el tenerla
+        expandir_familias: Si es True (por defecto), las categorías padre de
+                        FAMILIAS_ESTRATEGIA se expanden a toda su familia, tanto al excluir
+                        como al aplicar bandas de estilo. Ponerlo a False hace que las listas
+                        se tomen literalmente; lo usa la interfaz cuando el usuario ha afinado
+                        a mano qué subestrategias concretas quiere excluir y ya ha resuelto la
+                        selección a nivel de hoja (si no, la expansión desharía ese afinado).
     """
     
     # === NUEVO V2: PRE-PROCESSING (FILTRO POR ESTRATEGIAS ANTES DE OPTIMIZAR) ===
-    if exclude_strategies is not None:
+    if exclude_strategies:
+        # 'Alternativo' es categoría padre: al excluirlo caen también sus subestrategias.
+        prohibidas = (expandir_familias_estrategia(exclude_strategies)
+                      if expandir_familias else list(exclude_strategies))
         # Borramos los fondos que pertenezcan a las estrategias prohibidas
-        df = df[~df['Estrategia'].isin(exclude_strategies)].copy()
+        df = df[~df['Estrategia'].isin(prohibidas)].copy()
         df.reset_index(drop=True, inplace=True) # Reset de índice vital para CVXPY
     # ============================================================================
 
@@ -183,7 +285,10 @@ def optimize_portfolio(df, user_targets,
     # 'w @ is_Alt' es una expresión AFÍN (var * constantes 0/1); 'afín <= constante'
     # es una restricción convexa válida en DCP. No se divide por 'w'.
     if max_alt_weight is not None:
-        constraints.append(w @ df['is_Alt'].values <= max_alt_weight)
+        # Se usa Expo_Alt (continua) y NO is_Alt (binaria, igualdad estricta a 1): un fondo
+        # mixto con un 20% de alternativos valía 0 en la bandera y escapaba a este techo,
+        # que es una restricción DURA. Ahora consume exactamente su 20%.
+        constraints.append(w @ df['Expo_Alt'].fillna(0).values <= max_alt_weight)
     # ==========================================================
 
     # --- C. FUNCIÓN OBJETIVO (EL ERROR A MINIMIZAR) ---
@@ -215,19 +320,43 @@ def optimize_portfolio(df, user_targets,
         # Extraemos los datos de esa columna del DataFrame (ej. la columna USA de todos los fondos)
         col_data = df[col].values
         
-        # Métricas exclusivas para la RF (Todas empiezan por RF ( RF_Duracion, RF_Calidad_num...))
-        if col.startswith('RF_'):
-            # Usamos el truco descrito en el word para que el optimizador me deje 
-            # aplicar la duracion solo a la RF y no a la RV, manteniendo la convexidad de las funciones
-            # en todo momento, garantizando la convexidad del problema
-            # recordamos que estas operaciones son unicamente para los elementos de col_data y target_val que estan relacionados con RF
-            contribution_sum = w @ col_data  # Numerador (Aportación de duración, duracion total (sin hacer la media))
-            weight_sum_rf = w @ df['is_RF_Universe'].values # Denominador (Cuánto pesa la RF)
-            # de tal forma que dividiendo esto me da la duracion media de mi cartera (atentiendo solo a la RF)
+        # === MÉTRICAS RELATIVAS A UNA CLASE DE ACTIVO (no al total de la cartera) ===
+        # Las tres ramas siguientes comparten la misma linealización: como no se puede
+        # dividir por una expresión que contiene 'w' sin romper la convexidad (DCP),
+        # se quita el denominador multiplicando en cruz:
+        #     Sum(w * valor) - (Target * Sum(w * mascara)) = 0
+        # 'term' es una resta de dos expresiones afines en w, luego afín; su cuadrado es
+        # convexo. Si la clase no está presente, la máscara vale 0 y el error se anula.
+        mascara = None
 
-            # El error es la diferencia entre la Contribución Real y la Contribución Teórica Ideal
-            # Si tengo 0% de RF, weight_sum_rf es 0 y el error se anula (correcto).
-            term = contribution_sum - (target_val * weight_sum_rf)
+        if col.startswith('RF_'):
+            # Métricas exclusivas de la sub-cartera de tipos: duración, calidad, yield...
+            # Máscara CONTINUA (ver Expo_Tipos): antes era is_RF_Universe, binaria,
+            # que dejaba fuera a los mixtos y falseaba la media.
+            mascara = df['Expo_Tipos'].values
+
+        elif col.startswith('Geo_RV_') or col.startswith('Sec_'):
+            # Geografía Y SECTORES son fracción de la parte de RENTA VARIABLE.
+            # ("60% USA" = el 60% de mi bolsa está en EE.UU.; "30% Tecnología" = el 30%
+            # de mi bolsa es tecnológica). Un mixto 10/90 con toda su bolsa en tech
+            # aporta 0.10 de tecnología a la cartera, no 1.00.
+            mascara = df['Expo_RV'].fillna(0).values
+
+        elif col.startswith('Geo_RF_'):
+            # Idem para la renta fija: el % SOBRE la parte de tipos.
+            mascara = df['Expo_Tipos'].values
+
+        if mascara is not None:
+            # El dato del CSV es RELATIVO a su clase (Geo_RV_USA=1.0 significa "toda mi
+            # bolsa en USA", no "todo el fondo en USA"). Para sumarlo entre fondos hay que
+            # llevarlo antes a contribución ABSOLUTA multiplicando por la máscara:
+            #   mixto 10% bolsa toda en USA -> 0.10 * 1.0 = 0.10 del fondo
+            # Sin esta ponderación el cociente daría 10.0 en vez de 1.0.
+            # 'mascara * col_data' es producto de dos vectores CONSTANTES: la expresión
+            # sigue siendo afín en w y la convexidad queda intacta.
+            contribution_sum = w @ (mascara * col_data)
+            denominador = w @ mascara
+            term = contribution_sum - (target_val * denominador)
             error_total += factor_nivel_2 * cp.power(term, 2)
 
         else:
@@ -292,29 +421,51 @@ def optimize_portfolio(df, user_targets,
     # quiero hedged
     if preference_hedged_rv > 0:
         # QUIERO cubrir RV -> Penalizo RV NO Cubierta
-        # is_RV_Unhedged es un vector booleano 0's o 1's en un fucnion de si cada fondo es sin cubrir (true) o no
-        # en este caso al coger en la penalizacion los fondos que son ungedged, los penalizo 
-        # (estoy penalizando los pesos en la fila que se encuentran estos fondos, al hacer el producto escalar)
-        penalty_hedged_rv = preference_hedged_rv * (w @ df['is_RV_Unhedged'].values)
+        # expo_RV_Unhedged es un vector CONTINUO (0..1): cuánta bolsa sin cubrir aporta
+        # cada fondo. Al hacer el producto escalar penalizamos el peso de esos fondos
+        # en proporción exacta a la bolsa sin cubrir que realmente llevan dentro.
+        penalty_hedged_rv = preference_hedged_rv * (w @ df['expo_RV_Unhedged'].values)
         # no quiero hedged
     elif preference_hedged_rv < 0:
         # ODIO cubrir RV -> Penalizo RV SÍ Cubierta
-        penalty_hedged_rv = abs(preference_hedged_rv) * (w @ df['is_RV_Hedged'].values)
+        penalty_hedged_rv = abs(preference_hedged_rv) * (w @ df['expo_RV_Hedged'].values)
 
     # --- RENTA FIJA ---
     penalty_hedged_rf = 0
     if preference_hedged_rf > 0:
         # QUIERO cubrir RF -> Penalizo RF NO Cubierta
-        penalty_hedged_rf = preference_hedged_rf * (w @ df['is_RF_Unhedged'].values)
+        penalty_hedged_rf = preference_hedged_rf * (w @ df['expo_RF_Unhedged'].values)
     elif preference_hedged_rf < 0:
         # ODIO cubrir RF -> Penalizo RF SÍ Cubierta
-        penalty_hedged_rf = abs(preference_hedged_rf) * (w @ df['is_RF_Hedged'].values)
+        penalty_hedged_rf = abs(preference_hedged_rf) * (w @ df['expo_RF_Hedged'].values)
+
+    # === NUEVO V5: SESGO DE GESTIÓN POR CLASE DE ACTIVO (Nivel 3) ===
+    # Mismo patrón bidireccional que el hedging: positivo = "lo quiero" (penalizo lo
+    # contrario), negativo = "lo evito" (penalizo tenerlo), cero = indiferente.
+    # Permite el modelo Core-Satellite real: indexados en bolsa (mercado eficiente) y
+    # gestión activa en bonos (mercado OTC ineficiente), sin que un fondo mixto genere
+    # un choque: sus dos patas se contabilizan por separado y en su justa proporción.
+    penalty_activa_rv = 0
+    if preference_activa_rv > 0:      # QUIERO bolsa activa -> penalizo la bolsa pasiva
+        penalty_activa_rv = preference_activa_rv * (w @ df['expo_RV_Pasiva'].values)
+    elif preference_activa_rv < 0:    # QUIERO bolsa pasiva -> penalizo la bolsa activa
+        penalty_activa_rv = abs(preference_activa_rv) * (w @ df['expo_RV_Activa'].values)
+
+    penalty_activa_rf = 0
+    if preference_activa_rf > 0:      # QUIERO bonos activos -> penalizo los bonos pasivos
+        penalty_activa_rf = preference_activa_rf * (w @ df['expo_RF_Pasiva'].values)
+    elif preference_activa_rf < 0:    # QUIERO bonos pasivos -> penalizo los bonos activos
+        penalty_activa_rf = abs(preference_activa_rf) * (w @ df['expo_RF_Activa'].values)
 
     # === NUEVO V2: RESTRICCIÓN SUAVE (SOFT CONSTRAINT) PARA LÍMITE DE GESTIÓN ACTIVA ===
     penalty_activa = 0
     if max_activa is not None:
+        # Exposición EFECTIVA a gestión activa, no peso de fondos etiquetados 'Activa'.
+        # Antes, meter un 15% de un mixto activo con solo un 6.7% de bolsa consumía los 15
+        # puntos enteros del límite. Ahora consume lo que realmente gestiona activamente.
+        expo_activa_total = df['expo_RV_Activa'].values + df['expo_RF_Activa'].values
         # cp.pos() devuelve 0 si no nos pasamos de max_activa, y el exceso si nos pasamos.
-        exceso_activa = cp.pos((w @ df['is_Activa'].values) - max_activa)
+        exceso_activa = cp.pos((w @ expo_activa_total) - max_activa)
         # Multiplicamos por 10.0 (un factor de penalización) y lo elevamos al cuadrado.
         # Es lo suficientemente alto para frenarlo, pero permite pasarse un poco si mejora enormemente la cartera.
         penalty_activa = 10.0 * cp.power(exceso_activa, 2)
@@ -327,8 +478,11 @@ def optimize_portfolio(df, user_targets,
             if min_val == 0.0 and max_val == 1.0:
                 continue # Si no hay preferencia, ignoramos para ahorrar cálculo
                 
-            # Identificamos qué fondos tienen esta estrategia
-            is_strat = (df['Estrategia'] == strat).astype(int).values
+            # Identificamos qué fondos tienen esta estrategia.
+            # Si es una categoría padre ('Alternativo'), la banda cubre toda su familia.
+            familia = (FAMILIAS_ESTRATEGIA.get(strat, [strat])
+                       if expandir_familias else [strat])
+            is_strat = df['Estrategia'].isin(familia).astype(int).values
             peso_strat = w @ is_strat
             
             # Penalización "Suelo y Techo": Solo hay castigo si sale del rango [min, max]
@@ -339,7 +493,9 @@ def optimize_portfolio(df, user_targets,
 
     # --- E. RESOLVER ---
     # Agrupamos todas las penalizaciones suaves multiplicadas por el factor Nivel 3
-    penalizaciones_suaves = factor_nivel_3 * (penalty_etf + penalty_dist + penalty_hedged_rf + penalty_hedged_rv + penalty_activa + penalty_bandas)
+    penalizaciones_suaves = factor_nivel_3 * (penalty_etf + penalty_dist + penalty_hedged_rf + penalty_hedged_rv
+                                              + penalty_activa + penalty_bandas
+                                              + penalty_activa_rv + penalty_activa_rf)
     
     # Queremos minimizar (Error de Tracking Nivel 2 + Penalizaciones de Preferencia Nivel 3)
     objective = cp.Minimize(error_total + penalizaciones_suaves)
@@ -462,9 +618,13 @@ if __name__ == "__main__":
         # sacamos el vector columna de pesos para tenerlos en un vector y poder hacer operaciones matermaticas con ellos
         peso = resultado['Peso_Optimizado'].values
 
-        # Calculamos cuánto pesa la Renta Fija en total para poder "des-diluir" sus métricas
-        peso_total_rf = np.dot(peso, resultado['is_RF_Universe'].values)
-        print(f"    Peso total Renta Fija: {peso_total_rf:.2%}")
+        # Calculamos cuánto pesa cada clase para poder "des-diluir" sus métricas.
+        # Usamos las máscaras CONTINUAS (Expo_Tipos / Expo_RV), las mismas que el motor,
+        # para que la auditoría informe exactamente sobre la base en la que se optimizó.
+        peso_total_rf = np.dot(peso, resultado['Expo_Tipos'].values)
+        peso_total_rv = np.dot(peso, resultado['Expo_RV'].fillna(0).values)
+        print(f"    Peso total Renta Fija (incl. monetarios): {peso_total_rf:.2%}")
+        print(f"    Peso total Renta Variable: {peso_total_rv:.2%}")
 
         # === NUEVO V2: IMPRIMIMOS EL PESO TOTAL DE LA GESTIÓN ACTIVA PARA AUDITORÍA ===
         peso_total_activa = np.dot(peso, resultado['is_Activa'].values)
@@ -478,19 +638,19 @@ if __name__ == "__main__":
                 # calculamos la media ponderada. Se calcula una media por cada métrica a comprobar.
                 # ejemplo: para la metrica RV_USA coge y hace sumatorio de todos los fondos (los pesos de cada fondo * RV_USA de cada fondo)
                 # y así para cada métrica
-                raw_contribution = np.dot(peso, resultado[metrica].values)
-
-                # Volvemos a diferenciar para la hora de mostrar resultados la RF del resto (RV) para la hora de la duración
-                if metrica.startswith('RF_'):
-                    # Si es métrica de RF, dividimos por el peso de la RF (Renormalizar)
-                    # vamos a hacer este if para evitarnos problemas por si la persona quiere 100% RV (i.e 0% RF),
-                    # NO SE DIVIDA POR 0, Entonces si la cantidad de RF<0.5%, entonces no intentes calcular su duracion, es 0 directamente (else)
-                    if peso_total_rf > 0.01: 
-                        valor_real = raw_contribution / peso_total_rf
-                    else:
-                        # la parte de renta fija es 0
-                        valor_real = 0.0
+                # Renormalizamos con la MISMA base y la MISMA ponderación que usó el motor.
+                # Si no, el informe contradiría lo que se optimizó.
+                # La guarda >0.01 evita dividir por 0 cuando la clase no está en la cartera.
+                if metrica.startswith('RF_') or metrica.startswith('Geo_RF_'):
+                    # Métricas y geografía de la parte sensible a tipos
+                    raw_contribution = np.dot(peso, resultado['Expo_Tipos'].values * resultado[metrica].values)
+                    valor_real = raw_contribution / peso_total_rf if peso_total_rf > 0.01 else 0.0
+                elif metrica.startswith('Geo_RV_') or metrica.startswith('Sec_'):
+                    # Geografía y sectores de la parte de renta variable
+                    raw_contribution = np.dot(peso, resultado['Expo_RV'].fillna(0).values * resultado[metrica].values)
+                    valor_real = raw_contribution / peso_total_rv if peso_total_rv > 0.01 else 0.0
                 else:
+                    raw_contribution = np.dot(peso, resultado[metrica].values)
                     # si es global, el valor es directo
                     # para las demas variables ( que no empiezan por RF_), entonces directamente es ese valor
                     valor_real = raw_contribution
